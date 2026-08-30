@@ -3,7 +3,7 @@
 #include <stddef.h>
 
 const soc_info_t soc_mt6589 = {
-    .hw_code = 0x6589,
+    .hw_code = 0x6583,
     .name = "MT6589",
     .dram_base = 0x80000000,
     .uart0_base = 0x11006000,
