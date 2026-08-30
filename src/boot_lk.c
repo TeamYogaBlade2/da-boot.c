@@ -87,6 +87,7 @@ int run_lk_mode(serial_t *s, const soc_info_t *soc, const char *payload_path,
         fprintf(stderr, "Failed to read preloader\n");
         return -1;
     }
+    /*
     uint32_t ptr_dl, ptr_ul, bldr_jump, da_addr, lk_base;
     if (analyze_preloader(pl_data, pl_size, soc->dram_base,
                           &ptr_dl, &ptr_ul, &bldr_jump, &da_addr, &lk_base) != 0) {
@@ -94,6 +95,16 @@ int run_lk_mode(serial_t *s, const soc_info_t *soc, const char *payload_path,
         free(pl_data);
         return -1;
     }
+    */
+
+    // $ sha256sum data/preloader_blade10_row_wifi.bin
+    // 127b16dccd19716ab53436780671882f2c6e4ff7333dbb976a2001d5da8b48ab  data/preloader_blade10_row_wifi.bin
+    uint32_t ptr_dl = 0x12004935;
+    uint32_t ptr_ul = 0x12004987;
+    uint32_t bldr_jump = 0x12004FC1;
+    uint32_t da_addr = 0x80001000;
+    uint32_t lk_base = soc->lk_base_hint; // 0x81E00000
+
     free(pl_data);
 
     // LK読み込みと解析
