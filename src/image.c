@@ -96,19 +96,35 @@ int image_parse_preloader(const uint8_t *data, uint32_t size,
             uint64_t brlyt_offset = ehdr->dev_rw_unit;
             uint64_t brlyt_end = brlyt_offset + sizeof(*brlyt);
 
-            if (brlyt_end > size)
+            if (brlyt_end > size) {
+                fprintf(stderr,
+                        "[image] EMMC_BOOT: BRLYT out of range: offset=0x%llx size=0x%x\n",
+                        (unsigned long long)brlyt_offset, size);
                 return -1;
+            }
 
             brlyt = (const brlyt_t *)(data + brlyt_offset);
             if (memcmp(brlyt->identifier, "BRLYT", 5) != 0 ||
-                brlyt->version != 1)
+                brlyt->version != 1) {
+                fprintf(stderr,
+                        "[image] EMMC_BOOT: invalid BRLYT at 0x%llx"
+                        " (id=%.8s version=%u)\n",
+                        (unsigned long long)brlyt_offset,
+                        brlyt->identifier, brlyt->version);
                 return -1;
+            }
 
             if (brlyt->bl_desc.bl_begin_dev_addr > size ||
                 brlyt->bl_desc.bl_boundary_dev_addr > size ||
                 brlyt->bl_desc.bl_begin_dev_addr >
-                    brlyt->bl_desc.bl_boundary_dev_addr)
+                    brlyt->bl_desc.bl_boundary_dev_addr) {
+                fprintf(stderr,
+                        "[image] EMMC_BOOT: invalid BL range: begin=0x%x boundary=0x%x file=0x%x\n",
+                        brlyt->bl_desc.bl_begin_dev_addr,
+                        brlyt->bl_desc.bl_boundary_dev_addr,
+                        size);
                 return -1;
+            }
 
             gfh_offset = brlyt->bl_desc.bl_begin_dev_addr;
             has_gfh = 1;
@@ -136,8 +152,12 @@ int image_parse_preloader(const uint8_t *data, uint32_t size,
 
     /* Validate the container-derived GFH location. */
     if (gfh_offset != 0) {
-        if (gfh_offset > size || size - gfh_offset < sizeof(*gfh))
+        if (gfh_offset > size || size - gfh_offset < sizeof(*gfh)) {
+            fprintf(stderr,
+                    "[image] GFH_FILE_INFO out of range: offset=0x%x size=0x%x\n",
+                    gfh_offset, size);
             return -1;
+        }
     }
 
     gfh = (const gfh_file_info_v1_t *)(data + gfh_offset);
@@ -145,12 +165,23 @@ int image_parse_preloader(const uint8_t *data, uint32_t size,
         gfh->type != 0 ||
         memcmp(gfh->identifier, "FILE_INFO", 9) != 0 ||
         gfh->size < sizeof(*gfh) ||
-        gfh->size > size - gfh_offset)
+        gfh->size > size - gfh_offset) {
+        fprintf(stderr,
+                "[image] invalid GFH_FILE_INFO at 0x%x:"
+                " magic=0x%08x size=0x%x type=%u id=%.12s file_size=0x%x\n",
+                gfh_offset, gfh->magic_ver, gfh->size, gfh->type,
+                gfh->identifier, gfh->file_len);
         return -1;
+    }
 
     if (gfh->file_len < gfh->jump_offset ||
-        gfh->file_len - gfh->jump_offset < gfh->sig_len)
+        gfh->file_len - gfh->jump_offset < gfh->sig_len) {
+        fprintf(stderr,
+                "[image] invalid GFH_FILE_INFO sizes:"
+                " file_len=0x%x jump_offset=0x%x sig_len=0x%x\n",
+                gfh->file_len, gfh->jump_offset, gfh->sig_len);
         return -1;
+    }
 
     file_end = (uint64_t)gfh_offset + gfh->file_len;
     content_start = (uint64_t)gfh_offset + gfh->jump_offset;

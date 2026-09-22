@@ -166,16 +166,24 @@ static int open_analysis(arm_analysis_t *a, const uint8_t *data, uint32_t size,
     cs_mode mode = thumb ? CS_MODE_THUMB : CS_MODE_ARM;
 
     memset(a, 0, sizeof(*a));
-    if (cs_open(CS_ARCH_ARM, mode, &a->handle) != CS_ERR_OK)
+    if (cs_open(CS_ARCH_ARM, mode, &a->handle) != CS_ERR_OK) {
+        fprintf(stderr, "[analyzer] cs_open failed (%s mode)\n",
+                thumb ? "Thumb" : "ARM");
         return -1;
+    }
 
     if (cs_option(a->handle, CS_OPT_DETAIL, CS_OPT_ON) != CS_ERR_OK) {
+        fprintf(stderr, "[analyzer] cs_option(CS_OPT_DETAIL) failed (%s mode)\n",
+                thumb ? "Thumb" : "ARM");
         cs_close(&a->handle);
         return -1;
     }
 
     a->count = cs_disasm(a->handle, data, size, base, 0, &a->insn);
     if (!a->count) {
+        fprintf(stderr,
+                "[analyzer] disassembly failed: base=0x%08x size=0x%x mode=%s\n",
+                base, size, thumb ? "Thumb" : "ARM");
         cs_close(&a->handle);
         memset(a, 0, sizeof(*a));
         return -1;
@@ -620,14 +628,23 @@ static int try_preloader_dl_ul_mode(const uint8_t *data, uint32_t size, uint32_t
     const uint8_t *found = find_string(data, size, pat);
     arm_analysis_t a;
 
-    if (!found)
+    if (!found) {
+        fprintf(stderr, "[analyzer] ptr_dl/ptr_ul: string not found: %s\n", pat);
         return -1;
+    }
+
+    fprintf(stderr, "[analyzer] ptr_dl/ptr_ul: found string at +0x%x, mode=%s\n",
+            (unsigned)(found - data), thumb ? "Thumb" : "ARM");
+
     if (open_analysis(&a, data, size, base, thumb) != 0)
         return -1;
 
     uint32_t str_va = base + (uint32_t)(found - data);
     size_t ref_idx, begin, end;
     if (find_string_function(&a, str_va, &begin, &end, &ref_idx) != 0) {
+        fprintf(stderr,
+                "[analyzer] ptr_dl/ptr_ul: no code reference to string VA 0x%08x (%s mode)\n",
+                str_va, thumb ? "Thumb" : "ARM");
         close_analysis(&a);
         return -1;
     }
@@ -660,10 +677,16 @@ static int try_preloader_dl_ul_mode(const uint8_t *data, uint32_t size, uint32_t
 
         *ptr_dl = dl;
         *ptr_ul = ul;
+        fprintf(stderr,
+                "[analyzer] ptr_dl/ptr_ul: success dl=0x%08x ul=0x%08x (%s)\n",
+                dl, ul, thumb ? "Thumb" : "ARM");
         close_analysis(&a);
         return 0;
     }
 
+    fprintf(stderr,
+            "[analyzer] ptr_dl/ptr_ul: no valid LDM-backed DL/UL pair (%s mode)\n",
+            thumb ? "Thumb" : "ARM");
     (void)ref_idx;
     close_analysis(&a);
     return -1;
@@ -674,6 +697,7 @@ int extract_preloader_dl_ul(const uint8_t *data, uint32_t size, uint32_t base,
 {
     if (try_preloader_dl_ul_mode(data, size, base, 1, ptr_dl, ptr_ul) == 0)
         return 0;
+    fprintf(stderr, "[analyzer] ptr_dl/ptr_ul: Thumb analysis failed, retrying ARM\n");
     return try_preloader_dl_ul_mode(data, size, base, 0, ptr_dl, ptr_ul);
 }
 
@@ -733,17 +757,39 @@ static int try_bldr_jump_mode(const uint8_t *data, uint32_t size, uint32_t base,
     arm_analysis_t a;
     size_t ref_idx, begin, end, block_begin, block_end;
 
-    if (!found)
+    if (!found) {
+        fprintf(stderr, "[analyzer] bldr_jump: string not found: %s\n", pat);
         return -1;
+    }
+
+    fprintf(stderr, "[analyzer] bldr_jump: found string at +0x%x, mode=%s\n",
+            (unsigned)(found - data), thumb ? "Thumb" : "ARM");
+
     if (open_analysis(&a, data, size, base, thumb) != 0)
         return -1;
 
     uint32_t str_va = base + (uint32_t)(found - data);
     if (find_string_function(&a, str_va, &begin, &end, &ref_idx) != 0) {
+        fprintf(stderr,
+                "[analyzer] bldr_jump: no code reference to string VA 0x%08x (%s mode)\n",
+                str_va, thumb ? "Thumb" : "ARM");
         close_analysis(&a);
         return -1;
     }
+
+    fprintf(stderr,
+            "[analyzer] bldr_jump: reference=0x%08x function=[0x%08x,0x%08x) (%s)\n",
+            (uint32_t)a.insn[ref_idx].address,
+            (uint32_t)a.insn[begin].address,
+            end < a.count ? (uint32_t)a.insn[end].address
+                          : (uint32_t)(a.insn[a.count - 1].address +
+                                       a.insn[a.count - 1].size),
+            thumb ? "Thumb" : "ARM");
+
     if (block_has_pattern(&a, begin, end, &block_begin, &block_end) != 0) {
+        fprintf(stderr,
+                "[analyzer] bldr_jump: no suitable basic block found (%s mode)\n",
+                thumb ? "Thumb" : "ARM");
         close_analysis(&a);
         return -1;
     }
@@ -762,9 +808,16 @@ static int try_bldr_jump_mode(const uint8_t *data, uint32_t size, uint32_t base,
         }
 
     if (!last_target || !ptr_in_image(&a, last_target, 1)) {
+        fprintf(stderr,
+                "[analyzer] bldr_jump: no valid direct BL/BLX target in candidate block"
+                " (target=0x%08x)\n",
+                last_target);
         close_analysis(&a);
         return -1;
     }
+
+    fprintf(stderr, "[analyzer] bldr_jump: candidate jump target=0x%08x\n",
+            last_target);
 
     uint32_t da = 0;
     for (size_t i = block_begin; i < block_end; i++) {
@@ -788,6 +841,8 @@ static int try_bldr_jump_mode(const uint8_t *data, uint32_t size, uint32_t base,
     }
 
     if (!da) {
+        fprintf(stderr,
+                "[analyzer] bldr_jump: no 4KiB-aligned DA address literal found\n");
         close_analysis(&a);
         return -1;
     }
@@ -804,6 +859,7 @@ int extract_bldr_jump(const uint8_t *data, uint32_t size, uint32_t base,
 {
     if (try_bldr_jump_mode(data, size, base, 1, bldr_jump, da_addr) == 0)
         return 0;
+    fprintf(stderr, "[analyzer] bldr_jump: Thumb analysis failed, retrying ARM\n");
     return try_bldr_jump_mode(data, size, base, 0, bldr_jump, da_addr);
 }
 
@@ -945,23 +1001,55 @@ int analyze_preloader(const uint8_t *data, uint32_t size, uint32_t base_hint,
     uint32_t base = base_hint;
     const uint8_t *content = data;
 
-    if (image_parse_preloader(data, size, &load_addr, &jump_offset,
-                              &content_offset, &content_size) != 0)
-        return -1;
+    fprintf(stderr,
+            "[analyze_preloader] input size=0x%x base_hint=0x%08x\n",
+            size, base_hint);
 
-    if (content_offset > size)
+    if (image_parse_preloader(data, size, &load_addr, &jump_offset,
+                              &content_offset, &content_size) != 0) {
+        fprintf(stderr, "[analyze_preloader] FAILED: image_parse_preloader()\n");
         return -1;
-    if (content_size > size - content_offset)
+    }
+
+    if (content_offset > size) {
+        fprintf(stderr,
+                "[analyze_preloader] FAILED: content_offset=0x%x > size=0x%x\n",
+                content_offset, size);
+        return -1;
+    }
+    if (content_size > size - content_offset) {
+        fprintf(stderr,
+                "[analyze_preloader] FAILED: content range out of bounds:"
+                " offset=0x%x size=0x%x file=0x%x\n",
+                content_offset, content_size, size);
         content_size = size - content_offset;
+    }
 
     content = data + content_offset;
     if (load_addr)
         base = load_addr + jump_offset;
 
-    if (extract_preloader_dl_ul(content, content_size, base, ptr_dl, ptr_ul) != 0)
+    fprintf(stderr,
+            "[analyze_preloader] image: load=0x%08x jump=0x%08x"
+            " content=[0x%x,0x%x) base=0x%08x\n",
+            load_addr, jump_offset, content_offset,
+            content_offset + content_size, base);
+
+    if (extract_preloader_dl_ul(content, content_size, base, ptr_dl, ptr_ul) != 0) {
+        fprintf(stderr,
+                "[analyze_preloader] FAILED: extract_preloader_dl_ul()\n");
         return -1;
-    if (extract_bldr_jump(content, content_size, base, bldr_jump, da_addr) != 0)
+    }
+
+    fprintf(stderr,
+            "[analyze_preloader] ptr_dl=0x%08x ptr_ul=0x%08x\n",
+            *ptr_dl, *ptr_ul);
+
+    if (extract_bldr_jump(content, content_size, base, bldr_jump, da_addr) != 0) {
+        fprintf(stderr,
+                "[analyze_preloader] FAILED: extract_bldr_jump()\n");
         return -1;
+    }
 
     /* LK base is useful for LK mode but isn't required by Preloader RPC. */
     if (extract_lk_base(content, content_size, base, lk_base) != 0)
