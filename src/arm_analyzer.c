@@ -133,14 +133,124 @@ static int literal_value(const arm_analysis_t *a, const cs_insn *insn, uint32_t 
     return 0;
 }
 
+static reg_value_t resolve_reg_before(const arm_analysis_t *a, size_t begin, size_t at,
+                                      int reg, unsigned depth);
+
+static int resolve_operand_value(const arm_analysis_t *a, size_t begin, size_t at,
+                                 const cs_arm_op *op, uint32_t *value)
+{
+    reg_value_t resolved;
+    int reg;
+
+    if (!op || !value)
+        return -1;
+
+    switch (op->type) {
+    case ARM_OP_IMM:
+        *value = (uint32_t)op->imm;
+        return 0;
+
+    case ARM_OP_REG:
+        if (op->reg == ARM_REG_PC) {
+            *value = arm_pc(a, &a->insn[at]);
+            return 0;
+        }
+
+        reg = reg_index(op->reg);
+        if (reg < 0)
+            return -1;
+
+        resolved = resolve_reg_before(a, begin, at, reg, 0);
+        if (!value_is_full(resolved))
+            return -1;
+
+        *value = resolved.value;
+        return 0;
+
+    default:
+        return -1;
+    }
+}
+
 /* Find a reference to a value rather than the literal-pool slot itself. */
 static int instruction_refers_to(const arm_analysis_t *a, const cs_insn *insn,
                                  uint32_t target_va)
 {
+    const cs_arm *arm;
     uint32_t value;
 
     if (literal_value(a, insn, &value) == 0 && value == target_va)
         return 1;
+
+    if (!insn->detail)
+        return 0;
+
+    arm = &insn->detail->arm;
+
+    /*
+     * Thumb/ARM code frequently materializes a string address with
+     * ADD/ADR instead of loading it from a literal pool.  In particular,
+     *
+     *     add r3, pc
+     *
+     * is the Thumb two-operand form of:
+     *
+     *     r3 = r3 + PC
+     *
+     * and therefore requires tracking the old value of the destination
+     * register as well.
+     */
+    if (insn->id == ARM_INS_ADR) {
+        if (arm->op_count >= 2 &&
+            arm->operands[0].type == ARM_OP_REG &&
+            arm->operands[1].type == ARM_OP_IMM &&
+            (uint32_t)arm->operands[1].imm == target_va)
+            return 1;
+    }
+
+    if (insn->id == ARM_INS_ADD || insn->id == ARM_INS_SUB) {
+        uint32_t left, right, result;
+        int is_add = insn->id == ARM_INS_ADD;
+
+        if (arm->op_count == 2 &&
+            arm->operands[0].type == ARM_OP_REG &&
+            arm->operands[1].type == ARM_OP_REG &&
+            arm->operands[1].reg == ARM_REG_PC) {
+            int dst = reg_index(arm->operands[0].reg);
+
+            if (dst >= 0) {
+                reg_value_t old_dst =
+                    resolve_reg_before(a, 0, (size_t)(insn - a->insn), dst, 0);
+                if (value_is_full(old_dst)) {
+                    result = old_dst.value + arm_pc(
+                        a, &a->insn[(size_t)(insn - a->insn)]);
+                    if (result == target_va)
+                        return 1;
+                }
+            }
+        } else if (arm->op_count >= 3 &&
+                   arm->operands[0].type == ARM_OP_REG) {
+            size_t at = (size_t)(insn - a->insn);
+
+            if (arm->operands[1].type == ARM_OP_REG &&
+                arm->operands[1].reg == ARM_REG_PC &&
+                resolve_operand_value(a, 0, at, &arm->operands[2], &right) == 0) {
+                left = arm_pc(a, insn);
+                result = is_add ? left + right : left - right;
+                if (result == target_va)
+                    return 1;
+            }
+
+            if (arm->operands[2].type == ARM_OP_REG &&
+                arm->operands[2].reg == ARM_REG_PC &&
+                resolve_operand_value(a, 0, at, &arm->operands[1], &left) == 0) {
+                right = arm_pc(a, insn);
+                result = is_add ? left + right : left - right;
+                if (result == target_va)
+                    return 1;
+            }
+        }
+    }
 
     return 0;
 }
@@ -316,9 +426,6 @@ static int call_clobbers_reg(const cs_insn *insn, int reg)
     return (insn->id == ARM_INS_BL || insn->id == ARM_INS_BLX) && reg >= 0 && reg <= 3;
 }
 
-static reg_value_t resolve_reg_before(const arm_analysis_t *a, size_t begin, size_t at,
-                                      int reg, unsigned depth);
-
 static int previous_write(const arm_analysis_t *a, size_t begin, size_t at, int reg,
                           size_t *write_idx)
 {
@@ -413,32 +520,58 @@ static reg_value_t resolve_definition(const arm_analysis_t *a, size_t begin, siz
     case ARM_INS_ADD:
     case ARM_INS_SUB: {
         reg_value_t left, right;
-        int src;
+        int src, dst;
         int is_add = insn->id == ARM_INS_ADD;
 
-        if (arm->op_count < 3 || arm->operands[1].type != ARM_OP_REG)
-            break;
-        src = reg_index(arm->operands[1].reg);
-        if (src < 0)
-            break;
-        left = resolve_reg_before(a, begin, idx, src, depth + 1);
-        if (!value_is_full(left))
+        if (arm->operands[0].type != ARM_OP_REG)
             break;
 
-        if (arm->operands[2].type == ARM_OP_IMM) {
-            int32_t delta = (int32_t)arm->operands[2].imm;
-            result = reg_full(is_add ? left.value + delta : left.value - delta);
-            return result;
-        }
+        dst = reg_index(arm->operands[0].reg);
+        if (dst < 0)
+            break;
 
-        if (arm->operands[2].type == ARM_OP_REG) {
-            src = reg_index(arm->operands[2].reg);
-            if (src < 0)
+        /*
+         * Thumb two-operand register ADD/SUB has an implicit first source:
+         *
+         *     add r3, pc     -> r3 = r3 + PC
+         *     add r0, r1     -> r0 = r0 + r1
+         */
+        if (arm->op_count == 2 &&
+            arm->operands[1].type == ARM_OP_REG) {
+            left = resolve_reg_before(a, begin, idx, dst, depth + 1);
+            if (!value_is_full(left))
                 break;
-            right = resolve_reg_before(a, begin, idx, src, depth + 1);
-            if (value_is_full(right))
-                return reg_full(is_add ? left.value + right.value : left.value - right.value);
+
+            if (arm->operands[1].reg == ARM_REG_PC) {
+                right = reg_full(arm_pc(a, insn));
+            } else {
+                src = reg_index(arm->operands[1].reg);
+                if (src < 0)
+                    break;
+                right = resolve_reg_before(a, begin, idx, src, depth + 1);
+                if (!value_is_full(right))
+                    break;
+            }
+
+            return reg_full(is_add ? left.value + right.value
+                                   : left.value - right.value);
         }
+
+        if (arm->op_count < 3)
+            break;
+
+        if (arm->operands[1].type == ARM_OP_REG &&
+            arm->operands[1].reg == ARM_REG_PC) {
+            left = reg_full(arm_pc(a, insn));
+
+            if (resolve_operand_value(a, begin, idx, &arm->operands[2],
+                                      &right.value) != 0)
+                break;
+            right.mask = 3;
+            return reg_full(is_add ? left.value + right.value
+                                   : left.value - right.value);
+        }
+
         break;
     }
 
@@ -514,6 +647,13 @@ static int find_reference(const arm_analysis_t *a, uint32_t target_va, size_t *i
 {
     for (size_t i = 0; i < a->count; i++) {
         if (instruction_refers_to(a, &a->insn[i], target_va)) {
+            fprintf(stderr,
+                    "[analyzer] xref: 0x%08x -> 0x%08x (%s: %s %s)\n",
+                    (uint32_t)a->insn[i].address,
+                    target_va,
+                    a->thumb ? "Thumb" : "ARM",
+                    a->insn[i].mnemonic,
+                    a->insn[i].op_str);
             *idx = i;
             return 0;
         }
