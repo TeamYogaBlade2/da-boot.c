@@ -87,7 +87,6 @@ int run_lk_mode(serial_t *s, const soc_info_t *soc, const char *payload_path,
         fprintf(stderr, "Failed to read preloader\n");
         return -1;
     }
-    /*
     uint32_t ptr_dl, ptr_ul, bldr_jump, da_addr, lk_base;
     if (analyze_preloader(pl_data, pl_size, soc->dram_base,
                           &ptr_dl, &ptr_ul, &bldr_jump, &da_addr, &lk_base) != 0) {
@@ -95,15 +94,8 @@ int run_lk_mode(serial_t *s, const soc_info_t *soc, const char *payload_path,
         free(pl_data);
         return -1;
     }
-    */
-
-    // $ sha256sum data/preloader_blade10_row_wifi.bin
-    // 127b16dccd19716ab53436780671882f2c6e4ff7333dbb976a2001d5da8b48ab  data/preloader_blade10_row_wifi.bin
-    uint32_t ptr_dl = 0x12004935;
-    uint32_t ptr_ul = 0x12004987;
-    uint32_t bldr_jump = 0x12004FC1;
-    uint32_t da_addr = 0x80001000;
-    uint32_t lk_base = soc->lk_base_hint; // 0x81E00000
+    if (lk_base == 0)
+        lk_base = soc->lk_base_hint;
 
     free(pl_data);
 
@@ -116,19 +108,34 @@ int run_lk_mode(serial_t *s, const soc_info_t *soc, const char *payload_path,
     }
     if (lk_base == 0) lk_base = soc->lk_base_hint;
 
+    uint32_t lk_content_offset, lk_content_size;
+    char partition_name[33];
+    if (image_parse_lk(lk_data, lk_size, &lk_content_offset, &lk_content_size,
+                       partition_name, sizeof(partition_name)) != 0 ||
+        lk_content_offset > lk_size || lk_content_size > lk_size - lk_content_offset) {
+        fprintf(stderr, "Failed to parse LK image\n");
+        free(lk_data);
+        return -1;
+    }
+
+    const uint8_t *lk_code = lk_data + lk_content_offset;
+
     uint32_t mt_part_generic_read, mt_part_get_partition;
-    if (extract_mt_part_generic_read(lk_data, lk_size, lk_base, &mt_part_generic_read) != 0) {
+    if (extract_mt_part_generic_read(lk_code, lk_content_size, lk_base,
+                                      &mt_part_generic_read) != 0) {
         fprintf(stderr, "Failed to extract mt_part_generic_read\n");
         free(lk_data);
         return -1;
     }
-    if (extract_mt_part_get_partition(lk_data, lk_size, lk_base, &mt_part_get_partition) != 0) {
+    if (extract_mt_part_get_partition(lk_code, lk_content_size, lk_base,
+                                      &mt_part_get_partition) != 0) {
         fprintf(stderr, "Failed to extract mt_part_get_partition\n");
         free(lk_data);
         return -1;
     }
     printf("mt_part_generic_read: 0x%x\n", mt_part_generic_read);
     printf("mt_part_get_partition: 0x%x\n", mt_part_get_partition);
+    printf("LK partition: %s (%u bytes)\n", partition_name, lk_content_size);
 
     // ペイロード読み込みと注入
     uint32_t payload_size;
@@ -145,13 +152,13 @@ int run_lk_mode(serial_t *s, const soc_info_t *soc, const char *payload_path,
 
     // DA送信とジャンプ
     printf("Sending payload...\n");
-    if (mtk_send_da(s, soc->da_ram_addr, payload, payload_size) != 0) {
+    if (mtk_send_da(s, da_addr, payload, payload_size) != 0) {
         fprintf(stderr, "Failed to send DA\n");
         free(payload);
         free(lk_data);
         return -1;
     }
-    if (mtk_jump_da(s, soc->da_ram_addr) != 0) {
+    if (mtk_jump_da(s, da_addr) != 0) {
         fprintf(stderr, "Failed to jump DA\n");
         free(payload);
         free(lk_data);
@@ -267,13 +274,13 @@ int run_lk_mode(serial_t *s, const soc_info_t *soc, const char *payload_path,
 
     // LKアップロード
     printf("Uploading LK to 0x%x...\n", lk_base);
-    for (uint32_t off = 0; off < lk_size; off += CHUNK) {
-        uint32_t chunk = lk_size - off > CHUNK ? CHUNK : lk_size - off;
+    for (uint32_t off = 0; off < lk_content_size; off += CHUNK) {
+        uint32_t chunk = lk_content_size - off > CHUNK ? CHUNK : lk_content_size - off;
         message_init_write(&msg, lk_base + off, chunk);
         protocol_send_message(&proto, &msg);
         uint32_t size_be = __builtin_bswap32(chunk);
         serial_write(s, (uint8_t*)&size_be, 4);
-        serial_write(s, lk_data + off, chunk);
+        serial_write(s, lk_code + off, chunk);
         protocol_read_response(&proto, &resp);
     }
     free(lk_data);

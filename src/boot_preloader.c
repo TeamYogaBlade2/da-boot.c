@@ -35,8 +35,6 @@ int run_preloader_mode(serial_t *s, const soc_info_t *soc, const char *payload_p
         return -1;
     }
 
-    // Preloader解析
-/*
     uint32_t ptr_dl, ptr_ul, bldr_jump, da_addr, lk_base;
     if (analyze_preloader(pl_data, pl_size, soc->dram_base,
                           &ptr_dl, &ptr_ul, &bldr_jump, &da_addr, &lk_base) != 0) {
@@ -45,14 +43,6 @@ int run_preloader_mode(serial_t *s, const soc_info_t *soc, const char *payload_p
         free(payload);
         return -1;
     }
-*/
-    // $ sha256sum data/preloader_blade10_row_wifi.bin
-    // 127b16dccd19716ab53436780671882f2c6e4ff7333dbb976a2001d5da8b48ab  data/preloader_blade10_row_wifi.bin
-    uint32_t ptr_dl = 0x12004935;
-    uint32_t ptr_ul = 0x12004987;
-    uint32_t bldr_jump = 0x12004FC1;
-    uint32_t da_addr = 0x80001000;
-    uint32_t lk_base = 0;
 
     printf("ptr_dl: 0x%x, ptr_ul: 0x%x\n", ptr_dl, ptr_ul);
     printf("bldr_jump: 0x%x, da_addr: 0x%x\n", bldr_jump, da_addr);
@@ -71,8 +61,8 @@ int run_preloader_mode(serial_t *s, const soc_info_t *soc, const char *payload_p
     inject_params(payload, payload_size, &params);
 
     // DA送信（Preloaderはアドレスを無視してCFG_DA_RAM_ADDRに配置）
-    printf("Sending payload to 0x%x...\n", soc->da_ram_addr);
-    if (mtk_send_da(s, soc->da_ram_addr, payload, payload_size) != 0) {
+    printf("Sending payload to 0x%x...\n", da_addr);
+    if (mtk_send_da(s, da_addr, payload, payload_size) != 0) {
         fprintf(stderr, "Failed to send DA\n");
         free(pl_data);
         free(payload);
@@ -81,7 +71,7 @@ int run_preloader_mode(serial_t *s, const soc_info_t *soc, const char *payload_p
 
     // ジャンプ
     printf("Jumping to DA...\n");
-    if (mtk_jump_da(s, soc->da_ram_addr) != 0) {
+    if (mtk_jump_da(s, da_addr) != 0) {
         fprintf(stderr, "Failed to jump DA\n");
         free(pl_data);
         free(payload);
