@@ -35,39 +35,134 @@ typedef struct __attribute__((packed)) {
 int image_parse_preloader(const uint8_t *data, uint32_t size,
                           uint32_t *load_addr, uint32_t *jump_offset,
                           uint32_t *content_offset, uint32_t *content_size) {
-    // ヘッダ検出
-    if (size < 0x800) return -1;
+    typedef struct {
+        char identifier[12];
+        uint32_t version;
+        uint32_t dev_rw_unit;
+    } emmc_header_t;
 
-    // "EMMC_BOOT" または "MMM" チェック
-    if (memcmp(data, "EMMC_BOOT", 9) == 0) {
-        *content_offset = 0xB00;
-    } else if (memcmp(data, "MMM", 3) == 0) {
-        *content_offset = 0x300;
-    } else {
-        // 生バイナリ
-        *content_offset = 0;
+    typedef struct {
+        uint32_t bl_exist_magic;
+        uint8_t  bl_dev;
+        uint16_t bl_type;
+        uint32_t bl_begin_dev_addr;
+        uint32_t bl_boundary_dev_addr;
+        uint32_t bl_attribute;
+    } bl_descriptor_t;
+
+    typedef struct {
+        char identifier[8];
+        uint32_t version;
+        uint32_t boot_region_dev_addr;
+        uint32_t main_region_dev_addr;
+        bl_descriptor_t bl_desc;
+    } brlyt_t;
+
+    typedef struct {
+        uint32_t magic_ver;
+        uint16_t size;
+        uint16_t type;
+        char identifier[12];
+        uint32_t file_ver;
+        uint16_t file_type;
+        uint8_t flash_dev;
+        uint8_t sig_type;
+        uint32_t load_addr;
+        uint32_t file_len;
+        uint32_t max_size;
+        uint32_t content_offset;
+        uint32_t sig_len;
+        uint32_t jump_offset;
+        uint32_t attr;
+    } gfh_file_info_v1_t;
+
+    uint32_t gfh_offset = 0;
+    int has_gfh = 0;
+    const gfh_file_info_v1_t *gfh;
+    uint64_t file_end;
+    uint64_t content_start;
+    uint64_t content_end;
+
+    if (!data || !load_addr || !jump_offset ||
+        !content_offset || !content_size)
+        return -1;
+
+    /* EMMC_BOOT contains a BRLYT which locates the actual GFH. */
+    if (size >= sizeof(emmc_header_t)) {
+        const emmc_header_t *ehdr = (const emmc_header_t *)data;
+        if (memcmp(ehdr->identifier, "EMMC_BOOT", 9) == 0 &&
+            ehdr->version == 1) {
+            const brlyt_t *brlyt;
+            uint64_t brlyt_offset = ehdr->dev_rw_unit;
+            uint64_t brlyt_end = brlyt_offset + sizeof(*brlyt);
+
+            if (brlyt_end > size)
+                return -1;
+
+            brlyt = (const brlyt_t *)(data + brlyt_offset);
+            if (memcmp(brlyt->identifier, "BRLYT", 5) != 0 ||
+                brlyt->version != 1)
+                return -1;
+
+            if (brlyt->bl_desc.bl_begin_dev_addr > size ||
+                brlyt->bl_desc.bl_boundary_dev_addr > size ||
+                brlyt->bl_desc.bl_begin_dev_addr >
+                    brlyt->bl_desc.bl_boundary_dev_addr)
+                return -1;
+
+            gfh_offset = brlyt->bl_desc.bl_begin_dev_addr;
+            has_gfh = 1;
+        }
+    }
+
+    /* Bare GFH images start directly with GFH_FILE_INFO. */
+    if (gfh_offset == 0 && size >= sizeof(gfh_file_info_v1_t)) {
+        const gfh_file_info_v1_t *candidate =
+            (const gfh_file_info_v1_t *)data;
+        if ((candidate->magic_ver & 0x00FFFFFFu) == 0x004D4D4Du &&
+            candidate->type == 0 &&
+            memcmp(candidate->identifier, "FILE_INFO", 9) == 0)
+            has_gfh = 1;
+    }
+
+    if (!has_gfh) {
+        /* Raw binaries have no image metadata. */
         *load_addr = 0;
         *jump_offset = 0;
+        *content_offset = 0;
         *content_size = size;
         return 0;
     }
 
-    // GFHパース
-    const uint8_t *g = data + *content_offset;
-    uint32_t off = 0;
-    while (off + sizeof(gfh_header_t) <= size - *content_offset) {
-        gfh_header_t *hdr = (gfh_header_t*)(g + off);
-        if (hdr->magic == GFH_FILE_INFO_MAGIC) {
-            gfh_file_info_t *fi = (gfh_file_info_t*)(g + off);
-            *load_addr = fi->load_addr;
-            *jump_offset = fi->jump_offset;
-            *content_size = fi->file_len;
-            return 0;
-        }
-        off += hdr->size;
-        if (hdr->size == 0) break;
+    /* Validate the container-derived GFH location. */
+    if (gfh_offset != 0) {
+        if (gfh_offset > size || size - gfh_offset < sizeof(*gfh))
+            return -1;
     }
-    return -1;
+
+    gfh = (const gfh_file_info_v1_t *)(data + gfh_offset);
+    if ((gfh->magic_ver & 0x00FFFFFFu) != 0x004D4D4Du ||
+        gfh->type != 0 ||
+        memcmp(gfh->identifier, "FILE_INFO", 9) != 0 ||
+        gfh->size < sizeof(*gfh) ||
+        gfh->size > size - gfh_offset)
+        return -1;
+
+    if (gfh->file_len < gfh->jump_offset ||
+        gfh->file_len - gfh->jump_offset < gfh->sig_len)
+        return -1;
+
+    file_end = (uint64_t)gfh_offset + gfh->file_len;
+    content_start = (uint64_t)gfh_offset + gfh->jump_offset;
+    content_end = file_end - gfh->sig_len;
+    if (file_end > size || content_start > content_end || content_end > size)
+        return -1;
+
+    *load_addr = gfh->load_addr;
+    *jump_offset = gfh->jump_offset;
+    *content_offset = (uint32_t)content_start;
+    *content_size = (uint32_t)(content_end - content_start);
+    return 0;
 }
 
 int image_parse_lk(const uint8_t *data, uint32_t size,
