@@ -12,6 +12,13 @@ int extract_bldr_jump(const uint8_t *data, uint32_t size, uint32_t base,
 
 // LK解析
 int extract_mt_part_get_partition(const uint8_t *data, uint32_t size, uint32_t base, uint32_t *addr);
+int extract_get_part(const uint8_t *data, uint32_t size, uint32_t base,
+                     uint32_t *addr);
 int extract_mt_part_generic_read(const uint8_t *data, uint32_t size, uint32_t base, uint32_t *addr);
+
+int analyze_preloader(const uint8_t *data, uint32_t size, uint32_t base_hint,
+                      uint32_t *ptr_dl, uint32_t *ptr_ul,
+                      uint32_t *bldr_jump, uint32_t *da_addr,
+                      uint32_t *lk_base);
 
 #endif // PATCHER_H

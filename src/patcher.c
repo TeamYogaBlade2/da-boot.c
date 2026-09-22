@@ -48,7 +48,7 @@ static int is_blx_reg(cs_insn *insn) {
     return insn->id == ARM_INS_BLX;
 }
 
-int extract_preloader_dl_ul(const uint8_t *data, uint32_t size, uint32_t base,
+static int legacy_extract_preloader_dl_ul(const uint8_t *data, uint32_t size, uint32_t base,
                             uint32_t *ptr_dl, uint32_t *ptr_ul) {
     const char *pat = "%s sync time %dms\n";
     const uint8_t *found = find_string(data, size, pat);
@@ -103,7 +103,7 @@ int extract_preloader_dl_ul(const uint8_t *data, uint32_t size, uint32_t base,
     return 0;
 }
 
-int extract_lk_base(const uint8_t *data, uint32_t size, uint32_t base, uint32_t *lk_base) {
+static int legacy_extract_lk_base(const uint8_t *data, uint32_t size, uint32_t base, uint32_t *lk_base) {
     const char *pat = "UBOOT";
     const uint8_t *found = find_string(data, size, pat);
     if (!found) {
@@ -158,7 +158,7 @@ int extract_lk_base(const uint8_t *data, uint32_t size, uint32_t base, uint32_t 
     return 0;
 }
 
-int extract_bldr_jump(const uint8_t *data, uint32_t size, uint32_t base,
+static int legacy_extract_bldr_jump(const uint8_t *data, uint32_t size, uint32_t base,
                       uint32_t *bldr_jump, uint32_t *da_addr) {
     const char *pat = "%s usbdl_jump_da: %x\n";
     const uint8_t *found = find_string(data, size, pat);
@@ -242,7 +242,7 @@ int extract_bldr_jump(const uint8_t *data, uint32_t size, uint32_t base,
     return -1;
 }
 
-int extract_mt_part_get_partition(const uint8_t *data, uint32_t size, uint32_t base, uint32_t *addr) {
+static int legacy_extract_mt_part_get_partition(const uint8_t *data, uint32_t size, uint32_t base, uint32_t *addr) {
     const char *pat = "mt_part_get_partition";
     const uint8_t *found = find_string(data, size, pat);
     if (!found) return -1;
@@ -275,7 +275,7 @@ int extract_mt_part_get_partition(const uint8_t *data, uint32_t size, uint32_t b
     return 0;
 }
 
-int extract_mt_part_generic_read(const uint8_t *data, uint32_t size, uint32_t base, uint32_t *addr) {
+static int legacy_extract_mt_part_generic_read(const uint8_t *data, uint32_t size, uint32_t base, uint32_t *addr) {
     const char *pat = "[mt_part_register_device]";
     const uint8_t *found = find_string(data, size, pat);
     if (!found) return -1;
