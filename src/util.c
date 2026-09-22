@@ -30,26 +30,6 @@ uint8_t *read_file(const char *path, uint32_t *size) {
     return buf;
 }
 
-// Preloader解析
-int analyze_preloader(const uint8_t *data, uint32_t size, uint32_t base,
-                      uint32_t *ptr_dl, uint32_t *ptr_ul,
-                      uint32_t *bldr_jump, uint32_t *da_addr,
-                      uint32_t *lk_base) {
-    if (extract_preloader_dl_ul(data, size, base, ptr_dl, ptr_ul) != 0) {
-        fprintf(stderr, "Failed to extract DL/UL pointers\n");
-        return -1;
-    }
-    if (extract_bldr_jump(data, size, base, bldr_jump, da_addr) != 0) {
-        fprintf(stderr, "Failed to extract bldr_jump\n");
-        return -1;
-    }
-    if (extract_lk_base(data, size, base, lk_base) != 0) {
-        fprintf(stderr, "Warning: failed to extract LK base, using default\n");
-        *lk_base = 0;
-    }
-    return 0;
-}
-
 // ペイロードパラメータ注入
 void inject_params(uint8_t *payload, uint32_t payload_size,
                    const payload_params_t *params) {
