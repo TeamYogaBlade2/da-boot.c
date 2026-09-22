@@ -3,7 +3,7 @@ CFLAGS = -Wall -Wextra -O2 -Iinclude -MMD -MP
 LDFLAGS = -lcapstone
 
 SRCS = src/main.c src/serial.c src/mtk_protocol.c src/da_protocol.c \
-       src/patcher.c src/arm_analyzer.c src/soc_db.c src/boot_preloader.c src/boot_lk.c \
+       src/arm_analyzer.c src/soc_db.c src/boot_preloader.c src/boot_lk.c \
        src/repl.c src/image.c src/util.c
 OBJS = $(SRCS:.c=.o)
 DEPS = $(OBJS:.o=.d)

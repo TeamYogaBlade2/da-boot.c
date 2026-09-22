@@ -11,11 +11,6 @@ static int get_byte(serial_t *s, uint8_t *b) {
     return serial_read(s, b, 1, 2000);
 }
 
-static int put_word(serial_t *s, uint16_t w) {
-    uint8_t buf[2] = {(w >> 8) & 0xff, w & 0xff};
-    return serial_write(s, buf, 2);
-}
-
 static int get_word(serial_t *s, uint16_t *w) {
     uint8_t buf[2];
     if (serial_read(s, buf, 2, 2000) != 0) return -1;

@@ -16,6 +16,12 @@ int run_preloader_mode(serial_t *s, const soc_info_t *soc, const char *payload_p
                        const char *kernel_path, const char *ramdisk_path,
                        uint32_t dram_size_per_rank, uint32_t dram_ranks,
                        uint32_t jump_addr) {
+    (void)lk_path;
+    (void)kernel_path;
+    (void)ramdisk_path;
+    (void)dram_size_per_rank;
+    (void)dram_ranks;
+
     printf("Preloader mode for %s\n", soc->name);
 
     // Preloaderバイナリ読み込み

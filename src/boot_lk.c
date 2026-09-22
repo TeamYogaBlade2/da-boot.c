@@ -9,6 +9,7 @@
 #include "patcher.h"
 #include "image.h"
 #include "da_params.h"
+#include "util.h"
 
 // boot_arg構造体 (MT6589)
 typedef struct {
@@ -51,24 +52,13 @@ static void boot_arg_init(boot_arg_t *ba, uint32_t dram_size_per_rank, uint32_t 
     ba->boot_time = 1337;
 }
 
-// ファイル読み込み（再利用）
-extern uint8_t *read_file(const char *path, uint32_t *size);
-
-// Preloader解析（再利用）
-extern int analyze_preloader(const uint8_t *data, uint32_t size, uint32_t base,
-                             uint32_t *ptr_dl, uint32_t *ptr_ul,
-                             uint32_t *bldr_jump, uint32_t *da_addr,
-                             uint32_t *lk_base);
-
-// ペイロード注入（再利用）
-extern void inject_params(uint8_t *payload, uint32_t payload_size,
-                          const payload_params_t *params);
-
 int run_lk_mode(serial_t *s, const soc_info_t *soc, const char *payload_path,
                 const char *preloader_path, const char *lk_path,
                 const char *input_path, uint32_t input_addr,
                 const char *kernel_path, const char *ramdisk_path,
                 uint32_t dram_size_per_rank, uint32_t dram_ranks) {
+    (void)input_addr;
+
     printf("LK mode for %s\n", soc->name);
 
     if (!lk_path) {
