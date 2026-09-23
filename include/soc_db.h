@@ -3,7 +3,7 @@
 
 #include <stdint.h>
 
-typedef struct {
+typedef struct soc_info {
     uint32_t hw_code;
     const char *name;
     uint32_t dram_base;
