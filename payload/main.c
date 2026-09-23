@@ -416,8 +416,21 @@ uint32_t mt_part_generic_read_hook(void *dev, uint8_t *dst,
                                    uint32_t src_lo, uint32_t src_hi,
                                    uint32_t size) {
     uint64_t src = ((uint64_t)src_hi << 32) | src_lo;
+    static uint32_t log_count;
 
     if (!g_has_lk_params) return 0;
+
+    if (log_count < 8) {
+        uart_print("[mt_part_generic_read] src=0x");
+        uart_print_hex(src_hi);
+        uart_print_hex(src_lo);
+        uart_print(" dst=0x");
+        uart_print_hex((uint32_t)(uintptr_t)dst);
+        uart_print(" size=0x");
+        uart_print_hex(size);
+        uart_print("\n");
+        log_count++;
+    }
 
     // 元の関数を呼び出す
     uint32_t (*orig)(void*, uint8_t*, uint32_t, uint32_t, uint32_t) =
@@ -449,6 +462,12 @@ uint32_t mt_part_generic_read_hook(void *dev, uint8_t *dst,
                 uint32_t delta = (uint32_t)delta64;
 
                 if (size <= g_lk_params.bootimg_scratch_size - delta) {
+                    uart_print("[mt_part_generic_read] replacing boot.img"
+                               " delta=0x");
+                    uart_print_hex(delta);
+                    uart_print(" size=0x");
+                    uart_print_hex(size);
+                    uart_print("\n");
                     memcpy(dst,
                            (void*)(g_lk_params.bootimg_scratch_addr + delta),
                            size);
