@@ -64,5 +64,5 @@ SECTIONS
     }
 
     _image_end = .;
-    _stack_top = . + 0x1000;   /* 4KBスタック */
+    _stack_top = ALIGN(_image_end, 8) + 0x1000;   /* 4KBスタック */
 }

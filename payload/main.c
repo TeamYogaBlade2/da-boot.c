@@ -87,6 +87,7 @@ void main(uint32_t runtime_base);
 static __attribute__((noreturn, noinline))
 void enter_main(uint32_t entry, uint32_t runtime_base, uint32_t stack_top) {
     asm volatile(
+        "mov r9, %[base]\n"
         "mov sp, %[stack]\n"
         "mov r0, %[base]\n"
         "bx  %[entry]\n"
@@ -94,7 +95,7 @@ void enter_main(uint32_t entry, uint32_t runtime_base, uint32_t stack_top) {
         : [stack] "r" (stack_top),
           [base]  "r" (runtime_base),
           [entry] "r" (entry)
-        : "r0", "memory");
+        : "r0", "r9", "memory");
 
     __builtin_unreachable();
 }
@@ -210,7 +211,7 @@ void payload_bootstrap(uint32_t runtime_base) {
      * main() is Thumb code.  Preserve its Thumb bit when deriving its
      * relocated address from the runtime address used above.
      */
-    uint32_t main_addr = active_base + main_offset;
+    uint32_t main_addr = (active_base + main_offset) | 1u;
     uint32_t stack_top = stack_range.end & ~7u;
 
     enter_main(main_addr, active_base, stack_top);
