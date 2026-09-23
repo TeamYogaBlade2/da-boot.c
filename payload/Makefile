@@ -27,7 +27,7 @@ LDFLAGS = --target=$(TARGET_TRIPLE) \
           -Wl,-Bstatic \
           -Wl,--no-dynamic-linker
 
-SRCS = main.c usb.c protocol.c interceptor.c bump_alloc.c cache.c libc_min.c params.c start.S
+SRCS = main.c usb.c protocol.c interceptor.c bump_alloc.c cache.c libc_min.c params.c atags_to_fdt.c start.S
 
 C_OBJS = $(filter %.o, $(SRCS:.c=.o))
 S_OBJS = $(filter %.o, $(SRCS:.S=.o))

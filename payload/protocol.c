@@ -47,6 +47,7 @@ int protocol_send_message(protocol_t *p, const message_t *msg) {
             break;
         case MSG_GET_FREE_RANGE:
             memcpy(&buf[len], &msg->get_free_range.size, 4); len += 4;
+            memcpy(&buf[len], &msg->get_free_range.min_addr, 4); len += 4;
             break;
         case MSG_BLACKLIST_RANGE:
             memcpy(&buf[len], &msg->blacklist.start, 4); len += 4;
@@ -61,6 +62,9 @@ int protocol_send_message(protocol_t *p, const message_t *msg) {
                 memcpy(&buf[len], &msg->set_params.lk.ptr_mt_part_get_partition, 4); len += 4;
                 memcpy(&buf[len], &msg->set_params.lk.bootimg_scratch_addr, 4); len += 4;
                 memcpy(&buf[len], &msg->set_params.lk.bootimg_scratch_size, 4); len += 4;
+                memcpy(&buf[len], &msg->set_params.lk.ptr_boot_linux, 4); len += 4;
+                memcpy(&buf[len], &msg->set_params.lk.dtb_addr, 4); len += 4;
+                memcpy(&buf[len], &msg->set_params.lk.dtb_space, 4); len += 4;
             }
             break;
         default:
@@ -110,6 +114,8 @@ int protocol_read_message(protocol_t *p, message_t *msg) {
             break;
         case MSG_GET_FREE_RANGE:
             memcpy(&msg->get_free_range.size, &p->buf[off], 4); off += 4;
+            if (size < off + 4) return -1;
+            memcpy(&msg->get_free_range.min_addr, &p->buf[off], 4); off += 4;
             break;
         case MSG_BLACKLIST_RANGE:
             memcpy(&msg->blacklist.start, &p->buf[off], 4); off += 4;
@@ -124,6 +130,10 @@ int protocol_read_message(protocol_t *p, message_t *msg) {
                 memcpy(&msg->set_params.lk.ptr_mt_part_get_partition, &p->buf[off], 4); off += 4;
                 memcpy(&msg->set_params.lk.bootimg_scratch_addr, &p->buf[off], 4); off += 4;
                 memcpy(&msg->set_params.lk.bootimg_scratch_size, &p->buf[off], 4); off += 4;
+                if (size < off + 12) return -1;
+                memcpy(&msg->set_params.lk.ptr_boot_linux, &p->buf[off], 4); off += 4;
+                memcpy(&msg->set_params.lk.dtb_addr, &p->buf[off], 4); off += 4;
+                memcpy(&msg->set_params.lk.dtb_space, &p->buf[off], 4); off += 4;
             }
             break;
         default:

@@ -27,7 +27,8 @@ typedef enum {
 
 // フックID
 typedef enum {
-    HOOK_MT_PART_GENERIC_READ = 0
+    HOOK_MT_PART_GENERIC_READ = 0,
+    HOOK_LK_BOOT_LINUX
 } hook_id_t;
 
 // パラメータ種別
@@ -63,7 +64,7 @@ typedef struct {
         struct { uint32_t addr; uint32_t size; } flush_cache;
         struct { uint32_t addr; uint32_t r0; uint32_t r1; int has_r0; int has_r1; } jump;
         hook_id_t hook;
-        struct { uint32_t size; } get_free_range;
+        struct { uint32_t size; uint32_t min_addr; } get_free_range;
         struct { uint32_t start; uint32_t end; } blacklist;
         struct {
             params_type_t type;
@@ -99,7 +100,7 @@ void message_init_write(message_t *m, uint32_t addr, uint32_t size);
 void message_init_flush_cache(message_t *m, uint32_t addr, uint32_t size);
 void message_init_jump(message_t *m, uint32_t addr, uint32_t r0, uint32_t r1, int has_r0, int has_r1);
 void message_init_hook(message_t *m, hook_id_t hook);
-void message_init_get_free_range(message_t *m, uint32_t size);
+void message_init_get_free_range(message_t *m, uint32_t size, uint32_t min_addr);
 void message_init_blacklist(message_t *m, uint32_t start, uint32_t end);
 void message_init_set_params_preloader(message_t *m, preloader_runner_params_t *p);
 void message_init_set_params_lk(message_t *m, lk_runner_params_t *p);

@@ -31,6 +31,7 @@
 
 // フックID
 #define HOOK_MT_PART_GENERIC_READ    0
+#define HOOK_LK_BOOT_LINUX           1
 
 // パラメータタイプ
 #define PARAMS_PRELOADER  0
@@ -45,7 +46,7 @@ typedef struct {
         struct { uint32_t addr; uint32_t size; } flush_cache;
         struct { uint32_t addr; uint32_t r0; uint32_t r1; uint8_t has_r0; uint8_t has_r1; } jump;
         uint8_t hook;
-        struct { uint32_t size; } get_free_range;
+        struct { uint32_t size; uint32_t min_addr; } get_free_range;
         struct { uint32_t start; uint32_t end; } blacklist;
         struct {
             uint8_t type;

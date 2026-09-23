@@ -6,6 +6,7 @@
 #include "cache.h"
 #include "interceptor.h"
 #include "usb.h"
+#include "atags_to_fdt.h"
 
 // UART (MT6589: 0x11006000)
 #define UART0_BASE 0x11006000
@@ -25,6 +26,23 @@ static lk_runner_params_t g_lk_params;
 static int g_usb_log_ready = 0;
 static int g_has_preloader_params = 0;
 static int g_has_lk_params = 0;
+
+typedef void (*lk_kernel_entry_t)(uint32_t r0, uint32_t r1, uint32_t r2);
+typedef void (*lk_boot_linux_fn_t)(lk_kernel_entry_t kernel,
+                                   uint32_t tags,
+                                   uint32_t arg3,
+                                   uint32_t machine_id,
+                                   uint32_t ramdisk_start,
+                                   uint32_t ramdisk_size);
+
+static uint32_t g_real_kernel_entry;
+
+static void lk_boot_linux_hook(lk_kernel_entry_t kernel,
+                               uint32_t tags,
+                               uint32_t arg3,
+                               uint32_t machine_id,
+                               uint32_t ramdisk_start,
+                               uint32_t ramdisk_size);
 
 static void uart_putc(char c) {
     volatile uint32_t *status = (volatile uint32_t*)(UART0_BASE + 0x14);
@@ -355,6 +373,20 @@ static void handle_message(protocol_t *proto, message_t *msg) {
                     resp.type = RESP_NACK;
                     resp.err = PROTO_ERR_NOT_SUPPORTED;
                 }
+            } else if (msg->hook == HOOK_LK_BOOT_LINUX &&
+                       g_has_lk_params && g_lk_params.ptr_boot_linux) {
+                uart_print("Installing LK boot_linux DT hook at 0x");
+                uart_print_hex(g_lk_params.ptr_boot_linux | 1u);
+                uart_print("\n");
+                if (interceptor_replace(g_lk_params.ptr_boot_linux | 1u,
+                                         (void *)lk_boot_linux_hook) == 0) {
+                    uart_print("LK boot_linux DT hook installed\n");
+                    resp.type = RESP_ACK;
+                } else {
+                    uart_print("LK boot_linux DT hook failed\n");
+                    resp.type = RESP_NACK;
+                    resp.err = PROTO_ERR_NOT_SUPPORTED;
+                }
             } else {
                 resp.type = RESP_NACK;
                 resp.err = PROTO_ERR_NOT_SUPPORTED;
@@ -362,7 +394,8 @@ static void handle_message(protocol_t *proto, message_t *msg) {
             break;
         case MSG_GET_FREE_RANGE: {
             mem_range_t range;
-            if (find_unused_range(&g_params, msg->get_free_range.size, &range) == 0) {
+            if (find_unused_range_from(&g_params, msg->get_free_range.size,
+                                       msg->get_free_range.min_addr, &range) == 0) {
                 resp.type = RESP_RANGE;
                 resp.addr = range.start;
             } else {
@@ -479,6 +512,76 @@ uint32_t mt_part_generic_read_hook(void *dev, uint32_t read_cb,
         }
     }
     return orig(dev, read_cb, src_lo, src_hi, dst, size);
+}
+
+static __attribute__((noreturn, noinline))
+void enter_kernel(uint32_t entry, uint32_t r0, uint32_t r1, uint32_t r2) {
+    asm volatile(
+        "mov r0, %[r0]\n"
+        "mov r1, %[r1]\n"
+        "mov r2, %[r2]\n"
+        "bx %[entry]\n"
+        :
+        : [entry] "r" (entry),
+          [r0] "r" (r0),
+          [r1] "r" (r1),
+          [r2] "r" (r2)
+        : "r0", "r1", "r2", "memory");
+    __builtin_unreachable();
+}
+
+static __attribute__((noreturn, noinline))
+void dtb_kernel_entry(uint32_t r0, uint32_t machine_id, uint32_t tags) {
+    uint32_t total;
+
+    (void)r0;
+    uart_print("Converting LK ATAGs to DTB\n");
+    if (g_lk_params.dtb_addr == 0 || g_lk_params.dtb_space < 64u) {
+        uart_print("Invalid DTB workspace\n");
+        while (1);
+    }
+
+    if (atags_to_fdt((void *)(uintptr_t)tags,
+                     (void *)(uintptr_t)g_lk_params.dtb_addr,
+                     g_lk_params.dtb_space) != 0) {
+        uart_print("ATAG->FDT conversion failed; falling back to ATAGs\n");
+        ((lk_kernel_entry_t)(uintptr_t)g_real_kernel_entry)(0, machine_id, tags);
+        while (1);
+    }
+
+    total = ((const uint8_t *)(uintptr_t)g_lk_params.dtb_addr)[4] << 24;
+    total |= ((const uint8_t *)(uintptr_t)g_lk_params.dtb_addr)[5] << 16;
+    total |= ((const uint8_t *)(uintptr_t)g_lk_params.dtb_addr)[6] << 8;
+    total |= ((const uint8_t *)(uintptr_t)g_lk_params.dtb_addr)[7];
+    if (!total || total > g_lk_params.dtb_space) {
+        uart_print("Invalid converted DTB size\n");
+        while (1);
+    }
+    flush_dcache(g_lk_params.dtb_addr, total);
+    flush_icache();
+    uart_print("Jumping to kernel with DTB\n");
+    enter_kernel(g_real_kernel_entry, 0, 0xffffffffu,
+                 g_lk_params.dtb_addr);
+}
+
+static void lk_boot_linux_hook(lk_kernel_entry_t kernel,
+                               uint32_t tags,
+                               uint32_t arg3,
+                               uint32_t machine_id,
+                               uint32_t ramdisk_start,
+                               uint32_t ramdisk_size) {
+    lk_boot_linux_fn_t orig;
+
+    g_real_kernel_entry = (uint32_t)(uintptr_t)kernel | 1u;
+    orig = (lk_boot_linux_fn_t)(uintptr_t)
+        interceptor_original(g_lk_params.ptr_boot_linux);
+    if (!orig)
+        orig = (lk_boot_linux_fn_t)(uintptr_t)
+            (g_lk_params.ptr_boot_linux | 1u);
+
+    orig((lk_kernel_entry_t)(uintptr_t)dtb_kernel_entry,
+         tags, arg3, machine_id, ramdisk_start, ramdisk_size);
+    while (1);
 }
 
 void main(uint32_t runtime_base) {

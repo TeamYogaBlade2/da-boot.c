@@ -1435,6 +1435,55 @@ int extract_get_part(const uint8_t *data, uint32_t size, uint32_t base, uint32_t
     return try_function_by_string_mode(data, size, base, 0, "get_part", addr);
 }
 
+static int try_boot_linux_mode(const uint8_t *data, uint32_t size, uint32_t base,
+                               int thumb, uint32_t *addr)
+{
+    const char *boot_pat = "booting linux @ %p, ramdisk @ %p (%d)\n";
+    const char *done_pat = "lk finished --> jump to linux kernel\n\n";
+    const uint8_t *boot_found;
+    const uint8_t *done_found;
+    arm_analysis_t a;
+    size_t boot_ref;
+    size_t done_ref;
+    size_t begin;
+    size_t end;
+
+    boot_found = find_string(data, size, boot_pat);
+    done_found = find_string(data, size, done_pat);
+    if (!boot_found || !done_found)
+        return -1;
+
+    if (open_analysis(&a, data, size, base, thumb) != 0)
+        return -1;
+
+    if (find_reference(&a, base + (uint32_t)(boot_found - data), &boot_ref) != 0 ||
+        find_function_range(&a, boot_ref, &begin, &end) != 0) {
+        close_analysis(&a);
+        return -1;
+    }
+
+    for (done_ref = 0; done_ref < a.count; done_ref++) {
+        if (!instruction_refers_to(&a, &a.insn[done_ref],
+                                   base + (uint32_t)(done_found - data)))
+            continue;
+        if (done_ref >= begin && done_ref < end) {
+            *addr = function_address(&a, begin);
+            close_analysis(&a);
+            return 0;
+        }
+    }
+
+    close_analysis(&a);
+    return -1;
+}
+
+int extract_boot_linux(const uint8_t *data, uint32_t size, uint32_t base, uint32_t *addr)
+{
+    if (try_boot_linux_mode(data, size, base, 1, addr) == 0)
+        return 0;
+    return try_boot_linux_mode(data, size, base, 0, addr);
+}
+
 /*
  * mt_part_register_device() normally gets the default read callback through
  * an indirect table load such as:

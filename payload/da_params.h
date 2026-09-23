@@ -43,9 +43,14 @@ typedef struct {
     uint32_t ptr_mt_part_get_partition;
     uint32_t bootimg_scratch_addr;
     uint32_t bootimg_scratch_size;
+    uint32_t ptr_boot_linux;
+    uint32_t dtb_addr;
+    uint32_t dtb_space;
 } lk_runner_params_t;
 
 // 関数宣言
+int find_unused_range_from(const payload_params_t *p, uint32_t size,
+                           uint32_t min_addr, mem_range_t *out);
 int find_unused_range(const payload_params_t *p, uint32_t size, mem_range_t *out);
 int blacklist_dl(payload_params_t *p, uint32_t start, uint32_t end);
 int blacklist_reloc(payload_params_t *p, uint32_t start, uint32_t end);

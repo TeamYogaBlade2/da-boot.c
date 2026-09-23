@@ -237,6 +237,26 @@ For example:
 
 When a prepared boot image is already available, use `--input` instead.
 
+### Device tree
+
+LK mode can also boot with a supplied Device Tree Blob:
+
+```text
+--dtb <file>
+```
+
+When `--dtb` is specified, da-boot installs a hook in the stock LK
+`boot_linux()` path. LK still builds its normal ATAG list first; immediately
+before it enters the kernel, the payload folds the ATAG memory, command line,
+initrd and serial information into the supplied DTB and then enters the
+original kernel entry using the ARM DT boot protocol (`r0 = 0`, `r1 = 0xffffffff`,
+`r2 = DTB`).
+
+The DTB is uploaded into a free DRAM range at or above `0x88000000`, then
+blacklisted from subsequent payload allocations. The extra workspace is
+intentional because ATAG-to-FDT conversion may need more space than the
+original DTB.
+
 ### Payload override
 
 The C implementation also provides:

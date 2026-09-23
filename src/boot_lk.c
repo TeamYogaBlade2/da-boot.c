@@ -23,6 +23,10 @@
 /* Fixed load addresses used by the Blade 10 KitKat LK. */
 #define MT6589_LK_KERNEL_ADDR  0x80008000u
 #define MT6589_LK_RAMDISK_ADDR 0x84000000u
+#define MT6589_LK_DTB_MIN_ADDR 0x88000000u
+
+#define FDT_MAGIC 0xd00dfeedu
+#define FDT_HEADER_SIZE 40u
 
 typedef struct __attribute__((packed)) {
     uint32_t magic;
@@ -135,6 +139,104 @@ static int pad_lk_bootimg_read_window(uint8_t **data, uint32_t *size) {
     return 0;
 }
 
+static uint32_t read_be32(const uint8_t *p) {
+    return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) |
+           ((uint32_t)p[2] << 8) | p[3];
+}
+
+
+static uint32_t align_up_4(uint32_t v) {
+    return (v + 3u) & ~3u;
+}
+
+static int read_dtb_workspace(const char *path, uint8_t **data_out,
+                              uint32_t *raw_size_out, uint32_t *space_out) {
+    uint8_t *raw;
+    uint8_t *workspace;
+    uint32_t raw_size;
+    uint32_t total;
+    uint32_t off_struct;
+    uint32_t off_strings;
+    uint32_t off_rsvmap;
+    uint32_t size_struct;
+    uint32_t size_strings;
+    uint32_t version;
+    uint32_t last_comp;
+    uint32_t min_rsvmap;
+    uint32_t workspace_size;
+    uint32_t reserve_end;
+
+    if (!path || !data_out || !raw_size_out || !space_out)
+        return -1;
+
+    raw = read_file(path, &raw_size);
+    if (!raw)
+        return -1;
+    if (raw_size < FDT_HEADER_SIZE || read_be32(raw) != FDT_MAGIC) {
+        free(raw);
+        return -1;
+    }
+
+    total = read_be32(raw + 4);
+    off_struct = read_be32(raw + 8);
+    off_strings = read_be32(raw + 12);
+    off_rsvmap = read_be32(raw + 16);
+    version = read_be32(raw + 20);
+    last_comp = read_be32(raw + 24);
+    size_strings = read_be32(raw + 32);
+    size_struct = read_be32(raw + 36);
+
+    if (total < FDT_HEADER_SIZE || total > raw_size ||
+        version < 17u || last_comp > version ||
+        off_struct > total || size_struct > total - off_struct ||
+        off_strings > total || size_strings > total - off_strings ||
+        off_rsvmap < FDT_HEADER_SIZE || off_rsvmap > total - 16u) {
+        free(raw);
+        return -1;
+    }
+
+    reserve_end = off_rsvmap;
+    for (;;) {
+        if (reserve_end > total || total - reserve_end < 16u) {
+            free(raw);
+            return -1;
+        }
+        if (read_be32(raw + reserve_end) == 0 &&
+            read_be32(raw + reserve_end + 4) == 0 &&
+            read_be32(raw + reserve_end + 8) == 0 &&
+            read_be32(raw + reserve_end + 12) == 0) {
+            reserve_end += 16u;
+            break;
+        }
+        reserve_end += 16u;
+    }
+
+    min_rsvmap = align_up_4(reserve_end + 0x40u);
+    if (min_rsvmap < reserve_end)
+        goto fail;
+
+    if (total > (UINT32_MAX - 0x1000u) / 2u)
+        goto fail;
+    workspace_size = align_up_4(total * 2u + 0x1000u);
+    if (workspace_size < total || workspace_size < min_rsvmap)
+        goto fail;
+
+    workspace = calloc(1, workspace_size);
+    if (!workspace)
+        goto fail;
+    memcpy(workspace, raw, total);
+    free(raw);
+
+    *data_out = workspace;
+    *raw_size_out = total;
+    *space_out = workspace_size;
+    return 0;
+
+fail:
+    free(raw);
+    return -1;
+}
+
 static int upload_buffer(protocol_t *proto, serial_t *s,
                          uint32_t addr, const uint8_t *data, uint32_t size,
                          const char *what) {
@@ -244,6 +346,7 @@ int run_lk_mode(serial_t *s, const soc_info_t *soc, const char *payload_path,
                 const char *preloader_path, const char *lk_path,
                 const upload_file_t *inputs, size_t input_count,
                 const char *kernel_path, const char *ramdisk_path,
+                const char *dtb_path,
                 uint32_t preloader_addr_hint, uint32_t lk_addr_hint,
                 uint32_t dram_size_per_rank, uint32_t dram_ranks,
                 uint32_t lk_mode) {
@@ -309,6 +412,7 @@ int run_lk_mode(serial_t *s, const soc_info_t *soc, const char *payload_path,
     const uint8_t *lk_code = lk_data + lk_content_offset;
 
     uint32_t mt_part_generic_read, mt_part_get_partition;
+    uint32_t boot_linux = 0;
     if (extract_mt_part_generic_read(lk_code, lk_content_size, lk_base,
                                       &mt_part_generic_read) != 0) {
         fprintf(stderr, "Failed to extract mt_part_generic_read\n");
@@ -323,6 +427,14 @@ int run_lk_mode(serial_t *s, const soc_info_t *soc, const char *payload_path,
     }
     printf("mt_part_generic_read: 0x%x\n", mt_part_generic_read);
     printf("mt_part_get_partition: 0x%x\n", mt_part_get_partition);
+    if (dtb_path) {
+        if (extract_boot_linux(lk_code, lk_content_size, lk_base, &boot_linux) != 0) {
+            fprintf(stderr, "Failed to extract boot_linux\n");
+            free(lk_data);
+            return -1;
+        }
+        printf("boot_linux: 0x%x\n", boot_linux);
+    }
     printf("LK partition: %s (%u bytes)\n", partition_name, lk_content_size);
 
     // ペイロード読み込みと注入
@@ -535,7 +647,7 @@ int run_lk_mode(serial_t *s, const soc_info_t *soc, const char *payload_path,
     }
 
     // 空きメモリ取得
-    message_init_get_free_range(&msg, bootimg_size);
+    message_init_get_free_range(&msg, bootimg_size, 0);
     protocol_send_message(&proto, &msg);
     if (protocol_read_response(&proto, &resp) != 0 || resp.type != 'R') {
         fprintf(stderr, "Failed to get free range\n");
@@ -568,12 +680,62 @@ int run_lk_mode(serial_t *s, const soc_info_t *soc, const char *payload_path,
         return -1;
     }
 
+    uint32_t dtb_addr = 0;
+    uint32_t dtb_space = 0;
+    uint32_t dtb_size = 0;
+    uint8_t *dtb_data = NULL;
+
+    if (dtb_path) {
+        if (read_dtb_workspace(dtb_path, &dtb_data, &dtb_size, &dtb_space) != 0) {
+            fprintf(stderr, "Failed to read/validate DTB\n");
+            free(payload);
+            free(lk_data);
+            return -1;
+        }
+
+        message_init_get_free_range(&msg, dtb_space, MT6589_LK_DTB_MIN_ADDR);
+        if (protocol_send_message(&proto, &msg) != 0 ||
+            protocol_read_response(&proto, &resp) != 0 ||
+            resp.type != RESP_RANGE || resp.addr == 0 || (resp.addr & 7u)) {
+            fprintf(stderr, "Failed to allocate DTB range\n");
+            free(dtb_data);
+            free(payload);
+            free(lk_data);
+            return -1;
+        }
+        dtb_addr = resp.addr;
+        printf("dtb workspace at 0x%x (%u bytes, source 0x%x)\n",
+               dtb_addr, dtb_space, dtb_size);
+
+        if (upload_buffer(&proto, s, dtb_addr, dtb_data, dtb_size, "DTB") != 0) {
+            free(dtb_data);
+            free(payload);
+            free(lk_data);
+            return -1;
+        }
+        free(dtb_data);
+        dtb_data = NULL;
+
+        message_init_blacklist(&msg, dtb_addr, dtb_addr + dtb_space);
+        if (protocol_send_message(&proto, &msg) != 0 ||
+            protocol_read_response(&proto, &resp) != 0 ||
+            resp.type != RESP_ACK) {
+            fprintf(stderr, "Failed to blacklist DTB range\n");
+            free(payload);
+            free(lk_data);
+            return -1;
+        }
+    }
+
     // LKパラメータ設定
     lk_runner_params_t lk_params;
     lk_params.ptr_mt_part_generic_read = mt_part_generic_read | 1; // Thumb
     lk_params.ptr_mt_part_get_partition = mt_part_get_partition | 1;
     lk_params.bootimg_scratch_addr = bootimg_addr;
     lk_params.bootimg_scratch_size = bootimg_size;
+    lk_params.ptr_boot_linux = dtb_path ? (boot_linux | 1u) : 0;
+    lk_params.dtb_addr = dtb_addr;
+    lk_params.dtb_space = dtb_space;
     message_init_set_params_lk(&msg, &lk_params);
     if (protocol_send_message(&proto, &msg) != 0 ||
         protocol_read_response(&proto, &resp) != 0 ||
@@ -637,6 +799,17 @@ int run_lk_mode(serial_t *s, const soc_info_t *soc, const char *payload_path,
     message_init_jump(&msg, lk_base, boot_arg_addr, boot_arg_size, 1, 1);
     protocol_send_message(&proto, &msg);
     protocol_read_response(&proto, &resp);
+
+    if (dtb_path) {
+        message_init_hook(&msg, HOOK_LK_BOOT_LINUX);
+        if (protocol_send_message(&proto, &msg) != 0 ||
+            protocol_read_response(&proto, &resp) != 0 ||
+            resp.type != RESP_ACK) {
+            fprintf(stderr, "Failed to install LK DT hook\n");
+            free(payload);
+            return -1;
+        }
+    }
 
     free(payload);
     return 0;

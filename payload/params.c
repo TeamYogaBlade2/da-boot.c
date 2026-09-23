@@ -1,9 +1,10 @@
 #include "da_params.h"
 #include <stddef.h>
 
-int find_unused_range(const payload_params_t *p, uint32_t size, mem_range_t *out) {
+int find_unused_range_from(const payload_params_t *p, uint32_t size,
+                           uint32_t min_addr, mem_range_t *out) {
     uint32_t aligned_size = (size + 7) & ~7;
-    uint32_t addr = p->memory.start;
+    uint32_t addr = p->memory.start > min_addr ? p->memory.start : min_addr;
 
     while (addr + aligned_size <= p->memory.end) {
         int bad = 0;
@@ -25,6 +26,10 @@ int find_unused_range(const payload_params_t *p, uint32_t size, mem_range_t *out
         }
     }
     return -1;
+}
+
+int find_unused_range(const payload_params_t *p, uint32_t size, mem_range_t *out) {
+    return find_unused_range_from(p, size, 0, out);
 }
 
 int blacklist_dl(payload_params_t *p, uint32_t start, uint32_t end) {

@@ -15,6 +15,7 @@ int extract_mt_part_get_partition(const uint8_t *data, uint32_t size, uint32_t b
 int extract_get_part(const uint8_t *data, uint32_t size, uint32_t base,
                      uint32_t *addr);
 int extract_mt_part_generic_read(const uint8_t *data, uint32_t size, uint32_t base, uint32_t *addr);
+int extract_boot_linux(const uint8_t *data, uint32_t size, uint32_t base, uint32_t *addr);
 
 int analyze_preloader(const uint8_t *data, uint32_t size, uint32_t base_hint,
                       uint32_t *ptr_dl, uint32_t *ptr_ul,
