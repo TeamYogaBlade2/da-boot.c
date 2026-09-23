@@ -452,6 +452,10 @@ void main(uint32_t runtime_base) {
         while(1);
     }
     bump_init((void*)heap.start, 1024*1024);
+    if (blacklist_dl(&g_params, heap.start, heap.end) != 0) {
+        uart_print("Failed to reserve heap\n");
+        while(1);
+    }
 
     uart_print("Ready\n");
 

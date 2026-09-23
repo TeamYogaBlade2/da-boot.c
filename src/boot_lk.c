@@ -526,8 +526,19 @@ int run_lk_mode(serial_t *s, const soc_info_t *soc, const char *payload_path,
 
     // フック設定
     message_init_hook(&msg, HOOK_MT_PART_GENERIC_READ);
-    protocol_send_message(&proto, &msg);
-    if (protocol_read_response(&proto, &resp) != 0 || resp.type != RESP_ACK) {
+    if (protocol_send_message(&proto, &msg) != 0) {
+        fprintf(stderr, "Failed to send mt_part_generic_read hook request\n");
+        free(payload);
+        return -1;
+    }
+    if (protocol_read_response(&proto, &resp) != 0) {
+        fprintf(stderr, "Timed out waiting for mt_part_generic_read hook response\n");
+        free(payload);
+        return -1;
+    }
+    if (resp.type != RESP_ACK) {
+        fprintf(stderr, "mt_part_generic_read hook rejected: type=0x%02x err=%u\n",
+                resp.type, resp.err);
         fprintf(stderr, "Failed to install mt_part_generic_read hook\n");
         free(payload);
         return -1;

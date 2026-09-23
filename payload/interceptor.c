@@ -60,12 +60,19 @@ static uint32_t make_movw(uint8_t rd, uint16_t imm) {
 }
 
 static uint32_t make_movt(uint8_t rd, uint16_t imm) {
-    return make_movw(rd, imm) | (0x80 << 10); // MOVT
+    uint32_t i = (imm >> 11) & 1;
+    uint32_t imm4 = (imm >> 12) & 0xF;
+    uint32_t imm3 = (imm >> 8) & 0x7;
+    uint32_t imm8 = imm & 0xFF;
+    uint32_t hw1 = 0xF2C0 | (i << 10) | imm4;
+    uint32_t hw2 = (imm3 << 12) | (rd << 8) | imm8;
+
+    return (hw2 << 16) | hw1;
 }
 
 // LDR.W PC, [PC, #0] 生成
 static uint32_t make_ldr_pc(void) {
-    return 0xF8DFF000;
+    return 0xF000F8DF;
 }
 
 // NOP
