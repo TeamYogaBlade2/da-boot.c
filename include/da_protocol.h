@@ -93,6 +93,7 @@ int protocol_read_response(protocol_t *p, response_t *resp);
 void message_init_ack(message_t *m);
 void message_init_read(message_t *m, uint32_t addr, uint32_t size);
 void message_init_write(message_t *m, uint32_t addr, uint32_t size);
+void message_init_flush_cache(message_t *m, uint32_t addr, uint32_t size);
 void message_init_jump(message_t *m, uint32_t addr, uint32_t r0, uint32_t r1, int has_r0, int has_r1);
 void message_init_hook(message_t *m, hook_id_t hook);
 void message_init_get_free_range(message_t *m, uint32_t size);

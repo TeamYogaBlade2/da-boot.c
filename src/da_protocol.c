@@ -174,6 +174,9 @@ void message_init_read(message_t *m, uint32_t addr, uint32_t size) {
 void message_init_write(message_t *m, uint32_t addr, uint32_t size) {
     m->type = MSG_WRITE; m->write.addr = addr; m->write.size = size;
 }
+void message_init_flush_cache(message_t *m, uint32_t addr, uint32_t size) {
+    m->type = MSG_FLUSH_CACHE; m->flush_cache.addr = addr; m->flush_cache.size = size;
+}
 void message_init_jump(message_t *m, uint32_t addr, uint32_t r0, uint32_t r1, int has_r0, int has_r1) {
     m->type = MSG_JUMP; m->jump.addr = addr; m->jump.r0 = r0; m->jump.r1 = r1;
     m->jump.has_r0 = has_r0; m->jump.has_r1 = has_r1;

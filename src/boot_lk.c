@@ -135,6 +135,70 @@ static int pad_lk_bootimg_read_window(uint8_t **data, uint32_t *size) {
     return 0;
 }
 
+static int upload_buffer(protocol_t *proto, serial_t *s,
+                         uint32_t addr, const uint8_t *data, uint32_t size,
+                         const char *what) {
+    const uint32_t chunk_size = 256 * 1024;
+
+    for (uint32_t off = 0; off < size; off += chunk_size) {
+        uint32_t chunk = size - off > chunk_size ? chunk_size : size - off;
+        message_t msg;
+        response_t resp;
+        uint32_t size_be;
+
+        message_init_write(&msg, addr + off, chunk);
+        if (protocol_send_message(proto, &msg) != 0) {
+            fprintf(stderr, "Failed to send %s write request at 0x%x\n",
+                    what, addr + off);
+            return -1;
+        }
+
+        size_be = __builtin_bswap32(chunk);
+        if (serial_write(s, (uint8_t *)&size_be, sizeof(size_be)) != 0 ||
+            serial_write(s, data + off, chunk) != 0) {
+            fprintf(stderr, "Failed to upload %s chunk at 0x%x\n",
+                    what, addr + off);
+            return -1;
+        }
+
+        if (protocol_read_response(proto, &resp) != 0) {
+            fprintf(stderr, "No response for %s chunk at 0x%x\n",
+                    what, addr + off);
+            return -1;
+        }
+        if (resp.type != RESP_ACK) {
+            fprintf(stderr, "%s chunk at 0x%x rejected: type=0x%02x err=%u\n",
+                    what, addr + off, resp.type, resp.err);
+            return -1;
+        }
+    }
+
+    return 0;
+}
+
+static int flush_cache_range(protocol_t *proto, uint32_t addr, uint32_t size,
+                             const char *what) {
+    message_t msg;
+    response_t resp;
+
+    message_init_flush_cache(&msg, addr, size);
+    if (protocol_send_message(proto, &msg) != 0) {
+        fprintf(stderr, "Failed to request cache flush for %s\n", what);
+        return -1;
+    }
+    if (protocol_read_response(proto, &resp) != 0) {
+        fprintf(stderr, "No response for cache flush of %s\n", what);
+        return -1;
+    }
+    if (resp.type != RESP_ACK) {
+        fprintf(stderr, "Cache flush for %s rejected: type=0x%02x err=%u\n",
+                what, resp.type, resp.err);
+        return -1;
+    }
+
+    return 0;
+}
+
 // boot_arg構造体 (MT6589)
 typedef struct {
     uint32_t magic;
@@ -484,22 +548,25 @@ int run_lk_mode(serial_t *s, const soc_info_t *soc, const char *payload_path,
     printf("boot.img at 0x%x (%u bytes)\n", bootimg_addr, bootimg_size);
 
     // アップロード
-    const uint32_t CHUNK = 256 * 1024;
-    for (uint32_t off = 0; off < bootimg_size; off += CHUNK) {
-        uint32_t chunk = bootimg_size - off > CHUNK ? CHUNK : bootimg_size - off;
-        message_init_write(&msg, bootimg_addr + off, chunk);
-        protocol_send_message(&proto, &msg);
-        uint32_t size_be = __builtin_bswap32(chunk);
-        serial_write(s, (uint8_t*)&size_be, 4);
-        serial_write(s, bootimg_data + off, chunk);
-        protocol_read_response(&proto, &resp);
+    if (upload_buffer(&proto, s, bootimg_addr, bootimg_data, bootimg_size,
+                      "boot.img") != 0) {
+        free(bootimg_data);
+        free(payload);
+        free(lk_data);
+        return -1;
     }
     free(bootimg_data);
 
     // ブラックリスト
     message_init_blacklist(&msg, bootimg_addr, bootimg_addr + bootimg_size);
-    protocol_send_message(&proto, &msg);
-    protocol_read_response(&proto, &resp);
+    if (protocol_send_message(&proto, &msg) != 0 ||
+        protocol_read_response(&proto, &resp) != 0 ||
+        resp.type != RESP_ACK) {
+        fprintf(stderr, "Failed to blacklist boot.img range\n");
+        free(payload);
+        free(lk_data);
+        return -1;
+    }
 
     // LKパラメータ設定
     lk_runner_params_t lk_params;
@@ -508,19 +575,28 @@ int run_lk_mode(serial_t *s, const soc_info_t *soc, const char *payload_path,
     lk_params.bootimg_scratch_addr = bootimg_addr;
     lk_params.bootimg_scratch_size = bootimg_size;
     message_init_set_params_lk(&msg, &lk_params);
-    protocol_send_message(&proto, &msg);
-    protocol_read_response(&proto, &resp);
+    if (protocol_send_message(&proto, &msg) != 0 ||
+        protocol_read_response(&proto, &resp) != 0 ||
+        resp.type != RESP_ACK) {
+        fprintf(stderr, "Failed to set LK runner parameters\n");
+        free(payload);
+        free(lk_data);
+        return -1;
+    }
 
     // LKアップロード
     printf("Uploading LK to 0x%x...\n", lk_base);
-    for (uint32_t off = 0; off < lk_content_size; off += CHUNK) {
-        uint32_t chunk = lk_content_size - off > CHUNK ? CHUNK : lk_content_size - off;
-        message_init_write(&msg, lk_base + off, chunk);
-        protocol_send_message(&proto, &msg);
-        uint32_t size_be = __builtin_bswap32(chunk);
-        serial_write(s, (uint8_t*)&size_be, 4);
-        serial_write(s, lk_code + off, chunk);
-        protocol_read_response(&proto, &resp);
+    if (upload_buffer(&proto, s, lk_base, lk_code, lk_content_size, "LK") != 0) {
+        free(payload);
+        free(lk_data);
+        return -1;
+    }
+
+    /* The payload will inspect and patch the freshly uploaded LK. */
+    if (flush_cache_range(&proto, lk_base, lk_content_size, "LK") != 0) {
+        free(payload);
+        free(lk_data);
+        return -1;
     }
     free(lk_data);
 
@@ -548,12 +624,12 @@ int run_lk_mode(serial_t *s, const soc_info_t *soc, const char *payload_path,
     boot_arg_t boot_arg;
     boot_arg_init(&boot_arg, dram_size_per_rank, dram_ranks, lk_mode);
     printf("Uploading boot arg to 0x%x...\n", boot_arg_addr);
-    message_init_write(&msg, boot_arg_addr, boot_arg_size);
-    protocol_send_message(&proto, &msg);
-    uint32_t size_be = __builtin_bswap32(boot_arg_size);
-    serial_write(s, (uint8_t*)&size_be, 4);
-    serial_write(s, (uint8_t*)&boot_arg, boot_arg_size);
-    protocol_read_response(&proto, &resp);
+    if (upload_buffer(&proto, s, boot_arg_addr,
+                      (const uint8_t *)&boot_arg, boot_arg_size,
+                      "boot argument") != 0) {
+        free(payload);
+        return -1;
+    }
 
     // LKへジャンプ
     printf("Jumping to LK at 0x%x with boot arg at 0x%x\n",
