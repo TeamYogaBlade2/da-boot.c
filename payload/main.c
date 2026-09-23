@@ -232,9 +232,10 @@ void main(uint32_t runtime_base) {
         while(1);
     }
 
-    // 応答待ち
-    response_t resp;
-    if (protocol_read_response(&proto, &resp) != 0 || resp.type != RESP_ACK) {
+    // ホスト側は MSG_ACK を返す
+    message_t host_ack;
+    if (protocol_read_message(&proto, &host_ack) != 0 ||
+        host_ack.type != MSG_ACK) {
         uart_print("Handshake failed\n");
         while(1);
     }
