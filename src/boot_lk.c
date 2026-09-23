@@ -511,15 +511,6 @@ int run_lk_mode(serial_t *s, const soc_info_t *soc, const char *payload_path,
     protocol_send_message(&proto, &msg);
     protocol_read_response(&proto, &resp);
 
-    // フック設定
-    message_init_hook(&msg, HOOK_MT_PART_GENERIC_READ);
-    protocol_send_message(&proto, &msg);
-    if (protocol_read_response(&proto, &resp) != 0 || resp.type != RESP_ACK) {
-        fprintf(stderr, "Failed to install mt_part_generic_read hook\n");
-        free(payload);
-        return -1;
-    }
-
     // LKアップロード
     printf("Uploading LK to 0x%x...\n", lk_base);
     for (uint32_t off = 0; off < lk_content_size; off += CHUNK) {
@@ -532,6 +523,15 @@ int run_lk_mode(serial_t *s, const soc_info_t *soc, const char *payload_path,
         protocol_read_response(&proto, &resp);
     }
     free(lk_data);
+
+    // フック設定
+    message_init_hook(&msg, HOOK_MT_PART_GENERIC_READ);
+    protocol_send_message(&proto, &msg);
+    if (protocol_read_response(&proto, &resp) != 0 || resp.type != RESP_ACK) {
+        fprintf(stderr, "Failed to install mt_part_generic_read hook\n");
+        free(payload);
+        return -1;
+    }
 
     // Boot arg準備とアップロード
     boot_arg_t boot_arg;
