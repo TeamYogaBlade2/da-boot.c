@@ -116,8 +116,6 @@ void payload_bootstrap(uint32_t runtime_base) {
     uint32_t bss_end = (uint32_t)_bss_end;
     uint32_t rel_start = (uint32_t)_rel_dyn_start;
     uint32_t rel_end = (uint32_t)_rel_dyn_end;
-    uint32_t bootstrap_stack =
-        runtime_base + (uint32_t)_stack_top;
     uint32_t raw_size = bss_start - image_start;
     uint32_t image_size = bss_end - image_start;
     uint32_t params_offset =
@@ -131,15 +129,12 @@ void payload_bootstrap(uint32_t runtime_base) {
     }
 
     /*
-     * Reserve the original DA image and its temporary bootstrap stack.
-     * This prevents find_unused_range() from selecting memory which is still
-     * needed while the relocation copy is being made.
+     * The upstream payload searches for a relocation range first, then
+     * checks whether the selected range overlaps the running image. On
+     * MT6589 the DRAM range starts at 0x80000000 while the DA is normally
+     * staged at 0x80001000, so the first free range may overlap the source.
+     * Never copy an image over itself.
      */
-    if (blacklist_dl(params, runtime_base, bootstrap_stack) != 0) {
-        uart_print("Failed to reserve bootstrap image\n");
-        while (1);
-    }
-
     mem_range_t reloc_range;
     if (find_unused_range(params, image_size, &reloc_range) != 0) {
         uart_print("Failed to find relocation range\n");
@@ -147,26 +142,38 @@ void payload_bootstrap(uint32_t runtime_base) {
     }
 
     uint32_t active_base = reloc_range.start;
+    uint32_t runtime_end = runtime_base + image_size;
+    uint32_t reloc_end = active_base + image_size;
+    int overlaps = active_base < runtime_end && runtime_base < reloc_end;
 
-    /*
-     * The original image has already had its GOT/RELATIVE relocations fixed
-     * up for runtime_base.  Copy only the file-backed part, then move every
-     * R_ARM_RELATIVE result by the destination delta.
-     */
-    memcpy((void *)active_base, (const void *)runtime_base, raw_size);
+    if (active_base != runtime_base && !overlaps) {
+        /*
+         * The original image has already had its GOT/RELATIVE relocations
+         * fixed up for runtime_base. Copy the non-BSS portion, then adjust
+         * each relocated pointer by the source-to-destination delta.
+         */
+        memcpy((void *)active_base, (const void *)runtime_base, raw_size);
 
-    uint32_t delta = active_base - runtime_base;
-    elf32_rel_t *rel =
-        (elf32_rel_t *)(runtime_base + rel_start);
-    elf32_rel_t *rel_limit =
-        (elf32_rel_t *)(runtime_base + rel_end);
+        uint32_t delta = active_base - runtime_base;
+        elf32_rel_t *rel =
+            (elf32_rel_t *)(runtime_base + rel_start);
+        elf32_rel_t *rel_limit =
+            (elf32_rel_t *)(runtime_base + rel_end);
 
-    for (; rel < rel_limit; rel++) {
-        if ((rel->r_info & 0xffu) == R_ARM_RELATIVE) {
-            uint32_t *target =
-                (uint32_t *)(active_base + rel->r_offset);
-            *target += delta;
+        for (; rel < rel_limit; rel++) {
+            if ((rel->r_info & 0xffu) == R_ARM_RELATIVE) {
+                uint32_t *target =
+                    (uint32_t *)(active_base + rel->r_offset);
+                *target += delta;
+            }
         }
+    } else {
+        /*
+         * The startup code already fixed the R_ARM_RELATIVE relocations for
+         * runtime_base. Keep the image there when the candidate range
+         * overlaps the running payload.
+         */
+        active_base = runtime_base;
     }
 
     /*
