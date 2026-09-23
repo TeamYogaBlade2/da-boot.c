@@ -63,36 +63,56 @@ int mtk_get_hw_code(serial_t *s, uint16_t *hw_code) {
 }
 
 int mtk_send_da(serial_t *s, uint32_t addr, const uint8_t *data, uint32_t len) {
-    put_byte(s, CMD_SEND_DA);
+    if (put_byte(s, CMD_SEND_DA) != 0) return -1;
+
     uint8_t echo;
-    get_byte(s, &echo);
-    if (echo != CMD_SEND_DA) return -1;
+    if (get_byte(s, &echo) != 0) return -1;
+    if (echo != CMD_SEND_DA) {
+        fprintf(stderr, "[mtk] SEND_DA command echo mismatch: 0x%02x\n", echo);
+        return -1;
+    }
 
     // addr
-    put_dword(s, addr);
+    if (put_dword(s, addr) != 0) return -1;
     uint32_t echo_addr;
-    get_dword(s, &echo_addr);
-    if (echo_addr != addr) return -1;
+    if (get_dword(s, &echo_addr) != 0) return -1;
+    if (echo_addr != addr) {
+        fprintf(stderr,
+                "[mtk] SEND_DA address echo mismatch: got 0x%08x expected 0x%08x\n",
+                echo_addr, addr);
+        return -1;
+    }
 
     // len
-    put_dword(s, len);
+    if (put_dword(s, len) != 0) return -1;
     uint32_t echo_len;
-    get_dword(s, &echo_len);
-    if (echo_len != len) return -1;
+    if (get_dword(s, &echo_len) != 0) return -1;
+    if (echo_len != len) {
+        fprintf(stderr,
+                "[mtk] SEND_DA length echo mismatch: got 0x%x expected 0x%x\n",
+                echo_len, len);
+        return -1;
+    }
 
     // sig_len (0)
-    put_dword(s, 0);
+    if (put_dword(s, 0) != 0) return -1;
     uint32_t echo_sig;
-    get_dword(s, &echo_sig);
-    if (echo_sig != 0) return -1;
+    if (get_dword(s, &echo_sig) != 0) return -1;
+    if (echo_sig != 0) {
+        fprintf(stderr, "[mtk] SEND_DA signature length echo: 0x%x\n", echo_sig);
+        return -1;
+    }
 
     // status 1
     uint16_t status1;
     if (get_word(s, &status1) != 0) return -1;
-    if (status1 != 0) return -1;
+    if (status1 != 0) {
+        fprintf(stderr, "[mtk] SEND_DA range status: 0x%04x\n", status1);
+        return -1;
+    }
 
     // データ送信（エコーなし）
-    serial_write(s, data, len);
+    if (serial_write(s, data, len) != 0) return -1;
 
     // チェックサム受信
     uint16_t checksum;
@@ -101,7 +121,13 @@ int mtk_send_da(serial_t *s, uint32_t addr, const uint8_t *data, uint32_t len) {
     // status 2
     uint16_t status2;
     if (get_word(s, &status2) != 0) return -1;
-    return status2 == 0 ? 0 : -1;
+    if (status2 != 0) {
+        fprintf(stderr,
+                "[mtk] SEND_DA verify status: 0x%04x (checksum=0x%04x)\n",
+                status2, checksum);
+        return -1;
+    }
+    return 0;
 }
 
 int mtk_jump_da(serial_t *s, uint32_t addr) {
