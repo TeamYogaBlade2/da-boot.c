@@ -111,6 +111,28 @@ void enter_main(uint32_t entry, uint32_t runtime_base, uint32_t stack_top) {
 __attribute__((noreturn, noinline))
 void payload_bootstrap(uint32_t runtime_base) {
     payload_params_t *params = &g_params;
+
+    /*
+     * The MT6589 Preloader leaves the TOPRGU watchdog enabled when its
+     * D5/JUMP_DA path hands control to the payload. Disable it before the
+     * relocation/stack setup can be reset underneath us.
+     *
+     * The payload-side soc enum mirrors include/da_params.h:
+     * SOC_MT6589 == 3.
+     */
+    if (params->soc == 3u) {
+        volatile uint32_t * const wdt =
+            (volatile uint32_t *)0x10000000u;
+        uint32_t mode;
+
+        wdt[2] = 0x1971u; /* WDT_RST */
+        mode = wdt[0];
+        mode &= ~1u;      /* WDT_MODE_EN */
+        mode |= 0x22000000u; /* WDT_MODE_KEY */
+        wdt[0] = mode;
+        asm volatile("dsb sy\nisb sy" ::: "memory");
+    }
+
     /*
      * The startup code relocates the GOT before entering C.  Linker
      * symbols referenced through that GOT therefore evaluate to runtime
