@@ -10,7 +10,10 @@
 // UART (MT6589: 0x11006000)
 #define UART0_BASE 0x11006000
 
-__attribute__((section(".params"))) payload_params_t g_params;
+__attribute__((section(".params"), used, aligned(4)))
+payload_params_t g_params = {
+    .magic = MAGIC_DA,
+};
 
 // USB通信関数（Preloaderから提供される）
 static uint32_t g_usb_send_fn;

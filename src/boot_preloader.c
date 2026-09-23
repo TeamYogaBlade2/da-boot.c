@@ -64,7 +64,12 @@ int run_preloader_mode(serial_t *s, const soc_info_t *soc, const char *payload_p
     pl_params.ptr_bldr_jump = bldr_jump;
 
     // ペイロードにパラメータ注入
-    inject_params(payload, payload_size, &params);
+    if (inject_params(payload, payload_size, &params) != 0) {
+        fprintf(stderr, "Payload does not contain a parameter marker\n");
+        free(pl_data);
+        free(payload);
+        return -1;
+    }
 
     // DA送信（Preloaderはアドレスを無視してCFG_DA_RAM_ADDRに配置）
     printf("Sending payload to 0x%x...\n", da_addr);

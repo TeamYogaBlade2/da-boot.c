@@ -20,6 +20,11 @@ SECTIONS
         *(.data .data.*)
     }
 
+    .params : {
+        . = ALIGN(4);
+        KEEP(*(.params))
+    }
+
     .bss : {
         _bss_start = .;
         *(.bss .bss.*)

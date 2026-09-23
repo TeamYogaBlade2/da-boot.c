@@ -31,17 +31,18 @@ uint8_t *read_file(const char *path, uint32_t *size) {
 }
 
 // ペイロードパラメータ注入
-void inject_params(uint8_t *payload, uint32_t payload_size,
-                   const payload_params_t *params) {
+int inject_params(uint8_t *payload, uint32_t payload_size,
+                  const payload_params_t *params) {
     const uint32_t magic = MAGIC_DA;
     for (uint32_t i = 0; i + sizeof(payload_params_t) <= payload_size; i++) {
         if (memcmp(payload + i, &magic, 4) == 0) {
             memcpy(payload + i, params, sizeof(payload_params_t));
             printf("Params injected at offset 0x%x\n", i);
-            return;
+            return 0;
         }
     }
     fprintf(stderr, "Warning: MAGIC not found in payload\n");
+    return -1;
 }
 
 // PayloadParams 初期化

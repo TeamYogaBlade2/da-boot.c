@@ -5,7 +5,7 @@
 #include "da_params.h"
 
 uint8_t *read_file(const char *path, uint32_t *size);
-void inject_params(uint8_t *payload, uint32_t payload_size,
-                   const payload_params_t *params);
+int inject_params(uint8_t *payload, uint32_t payload_size,
+                  const payload_params_t *params);
 
 #endif // UTIL_H
