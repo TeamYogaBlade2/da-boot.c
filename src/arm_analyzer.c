@@ -434,8 +434,10 @@ static int is_block_terminator(const cs_insn *insn)
     }
 }
 
-static int direct_call_target(const cs_insn *insn, uint32_t *target)
+static int call_target(const arm_analysis_t *a, size_t begin, size_t idx,
+                       uint32_t *target)
 {
+    const cs_insn *insn = &a->insn[idx];
     const cs_arm *arm;
 
     if (!insn->detail)
@@ -445,7 +447,24 @@ static int direct_call_target(const cs_insn *insn, uint32_t *target)
 
     arm = &insn->detail->arm;
     if (!arm->op_count || arm->operands[0].type != ARM_OP_IMM)
-        return -1;
+    {
+        int reg;
+        reg_value_t value;
+
+        if (arm->operands[0].type != ARM_OP_REG)
+            return -1;
+
+        reg = reg_index(arm->operands[0].reg);
+        if (reg < 0)
+            return -1;
+
+        value = resolve_reg_before(a, begin, idx, reg, 0);
+        if (!value_is_full(value))
+            return -1;
+
+        *target = value.value;
+        return 0;
+    }
 
     *target = (uint32_t)arm->operands[0].imm;
     return 0;
@@ -816,9 +835,6 @@ static int block_has_pattern(const arm_analysis_t *a, size_t begin, size_t end,
                              size_t *best_begin, size_t *best_end)
 {
     size_t block_start = begin;
-    size_t best_score = 0;
-    size_t best_lit = 0;
-    size_t best_blx = 0;
 
     for (size_t i = begin; i < end; i++) {
         if (is_block_terminator(&a->insn[i]) || i + 1 == end) {
@@ -831,8 +847,7 @@ static int block_has_pattern(const arm_analysis_t *a, size_t begin, size_t end,
                     lits++;
                 if (a->insn[j].id == ARM_INS_BLX &&
                     a->insn[j].detail &&
-                    a->insn[j].detail->arm.op_count &&
-                    a->insn[j].detail->arm.operands[0].type == ARM_OP_IMM)
+                    a->insn[j].detail->arm.op_count)
                     blxs++;
             }
 
@@ -842,22 +857,11 @@ static int block_has_pattern(const arm_analysis_t *a, size_t begin, size_t end,
                 return 0;
             }
 
-            size_t score = lits * 8 + blxs;
-            if (score > best_score ||
-                (score == best_score && blxs > best_blx) ||
-                (score == best_score && blxs == best_blx && lits > best_lit)) {
-                best_score = score;
-                best_lit = lits;
-                best_blx = blxs;
-                *best_begin = block_start;
-                *best_end = block_end;
-            }
-
             block_start = i + 1;
         }
     }
 
-    return (best_score >= 12 && best_lit >= 2 && best_blx >= 2) ? 0 : -1;
+    return -1;
 }
 
 static int try_preloader_dl_ul_mode(const uint8_t *data, uint32_t size, uint32_t base,
@@ -1032,61 +1036,101 @@ static int try_bldr_jump_mode(const uint8_t *data, uint32_t size, uint32_t base,
     const char *pat = "%s usbdl_jump_da: %x\n";
     const uint8_t *found = find_string(data, size, pat);
     arm_analysis_t a;
-    size_t ref_idx, begin, end, block_begin, block_end;
+    size_t ref_idx = 0;
+    size_t begin = 0, end = 0;
+    size_t block_begin = 0, block_end = 0;
+    size_t function_begin = 0, function_end = 0;
+    int have_block = 0;
 
     if (!found) {
         fprintf(stderr, "[analyzer] bldr_jump: string not found: %s\n", pat);
-        return -1;
+    } else {
+        fprintf(stderr, "[analyzer] bldr_jump: found string at +0x%x, mode=%s\n",
+                (unsigned)(found - data), thumb ? "Thumb" : "ARM");
     }
-
-    fprintf(stderr, "[analyzer] bldr_jump: found string at +0x%x, mode=%s\n",
-            (unsigned)(found - data), thumb ? "Thumb" : "ARM");
 
     if (open_analysis(&a, data, size, base, thumb) != 0)
         return -1;
 
-    uint32_t str_va = base + (uint32_t)(found - data);
-    if (find_string_function(&a, str_va, &begin, &end, &ref_idx) != 0) {
-        fprintf(stderr,
-                "[analyzer] bldr_jump: no code reference to string VA 0x%08x (%s mode)\n",
-                str_va, thumb ? "Thumb" : "ARM");
-        close_analysis(&a);
-        return -1;
+    if (found) {
+        uint32_t str_va = base + (uint32_t)(found - data);
+
+        if (find_string_function(&a, str_va, &begin, &end, &ref_idx) == 0) {
+            fprintf(stderr,
+                    "[analyzer] bldr_jump: reference=0x%08x function=[0x%08x,0x%08x) (%s)\n",
+                    (uint32_t)a.insn[ref_idx].address,
+                    (uint32_t)a.insn[begin].address,
+                    end < a.count ? (uint32_t)a.insn[end].address
+                                  : (uint32_t)(a.insn[a.count - 1].address +
+                                               a.insn[a.count - 1].size),
+                    thumb ? "Thumb" : "ARM");
+
+            if (block_has_pattern(&a, begin, end, &block_begin, &block_end) == 0) {
+                function_begin = begin;
+                function_end = end;
+                have_block = 1;
+            } else {
+                fprintf(stderr,
+                        "[analyzer] bldr_jump: no suitable basic block found (%s mode)\n",
+                        thumb ? "Thumb" : "ARM");
+            }
+        } else {
+            fprintf(stderr,
+                    "[analyzer] bldr_jump: no code reference to string VA 0x%08x (%s mode)\n",
+                    str_va, thumb ? "Thumb" : "ARM");
+        }
     }
 
-    fprintf(stderr,
-            "[analyzer] bldr_jump: reference=0x%08x function=[0x%08x,0x%08x) (%s)\n",
-            (uint32_t)a.insn[ref_idx].address,
-            (uint32_t)a.insn[begin].address,
-            end < a.count ? (uint32_t)a.insn[end].address
-                          : (uint32_t)(a.insn[a.count - 1].address +
-                                       a.insn[a.count - 1].size),
-            thumb ? "Thumb" : "ARM");
-
-    if (block_has_pattern(&a, begin, end, &block_begin, &block_end) != 0) {
+    /*
+     * Some preloaders have no statically recoverable xref from the
+     * usbdl_jump_da() format string.  The upstream extractor does not
+     * actually need the string reference to identify the block: the
+     * characteristic pattern itself is sufficiently strong.
+     */
+    if (!have_block) {
         fprintf(stderr,
-                "[analyzer] bldr_jump: no suitable basic block found (%s mode)\n",
+                "[analyzer] bldr_jump: scanning all basic blocks for"
+                " upstream pattern (%s mode)\n",
                 thumb ? "Thumb" : "ARM");
-        close_analysis(&a);
-        return -1;
+
+        if (block_has_pattern(&a, 0, a.count, &block_begin, &block_end) != 0) {
+            fprintf(stderr,
+                    "[analyzer] bldr_jump: no matching basic block found (%s mode)\n",
+                    thumb ? "Thumb" : "ARM");
+            close_analysis(&a);
+            return -1;
+        }
+
+        if (find_function_range(&a, block_begin, &function_begin, &function_end) != 0) {
+            function_begin = block_begin;
+            function_end = block_end;
+        }
+
+        fprintf(stderr,
+                "[analyzer] bldr_jump: fallback block=[0x%08x,0x%08x)"
+                " function=[0x%08x,0x%08x) (%s)\n",
+                (uint32_t)a.insn[block_begin].address,
+                block_end < a.count ? (uint32_t)a.insn[block_end].address
+                                    : (uint32_t)(a.insn[a.count - 1].address +
+                                                 a.insn[a.count - 1].size),
+                (uint32_t)a.insn[function_begin].address,
+                function_end < a.count ? (uint32_t)a.insn[function_end].address
+                                       : (uint32_t)(a.insn[a.count - 1].address +
+                                                    a.insn[a.count - 1].size),
+                thumb ? "Thumb" : "ARM");
     }
 
     uint32_t last_target = 0;
     for (size_t i = block_begin; i < block_end; i++) {
         uint32_t target;
-        if (direct_call_target(&a.insn[i], &target) == 0 && a.insn[i].id == ARM_INS_BLX)
-            last_target = target;
-    }
-    if (!last_target)
-        for (size_t i = block_begin; i < block_end; i++) {
-            uint32_t target;
-            if (direct_call_target(&a.insn[i], &target) == 0)
+        if ((a.insn[i].id == ARM_INS_BL || a.insn[i].id == ARM_INS_BLX) &&
+            call_target(&a, function_begin, i, &target) == 0)
                 last_target = target;
-        }
+    }
 
     if (!last_target || !ptr_in_image(&a, last_target, 1)) {
         fprintf(stderr,
-                "[analyzer] bldr_jump: no valid direct BL/BLX target in candidate block"
+                "[analyzer] bldr_jump: no valid BL/BLX target in candidate block"
                 " (target=0x%08x)\n",
                 last_target);
         close_analysis(&a);
@@ -1126,7 +1170,6 @@ static int try_bldr_jump_mode(const uint8_t *data, uint32_t size, uint32_t base,
 
     *bldr_jump = last_target | 1u;
     *da_addr = da;
-    (void)ref_idx;
     close_analysis(&a);
     return 0;
 }
