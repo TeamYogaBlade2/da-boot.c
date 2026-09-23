@@ -4,6 +4,8 @@ TARGET_TRIPLE = arm-none-eabi
 
 CFLAGS = --target=$(TARGET_TRIPLE) \
          -mcpu=cortex-a7 \
+         -mfpu=none \
+         -mfloat-abi=soft \
          -mthumb \
          -fPIC \
          -ffreestanding \
