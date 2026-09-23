@@ -440,18 +440,26 @@ uint32_t mt_part_generic_read_hook(void *dev, uint8_t *dst,
     // mt_part_get_partition を呼び出し
     uint32_t (*get_part)(const char*) = (void*)g_lk_params.ptr_mt_part_get_partition;
     uint32_t *part = (uint32_t*)get_part("BOOTIMG");
+    uint32_t part_start_offset = 0x0c;
     if (!part) {
         part = (uint32_t*)get_part("boot");
+        part_start_offset = 0x00;
     }
     if (part) {
         /*
-         * This Lenovo MT6589 KitKat LK reads the partition start block
-         * from part_t + 0x0c.  The Android boot header is read from the
-         * partition start itself; later kernel/ramdisk reads begin at
-         * partition start + 0x800.
+         * The returned partition descriptor differs depending on the
+         * partition name used to look it up:
+         *
+         *   BOOTIMG -> start block at +0x0c
+         *   boot    -> start block at +0x00
+         *
+         * This matches the stock MT6589 KitKat LK and the upstream
+         * mt6572-mainline/da-boot implementation.
          */
         uint32_t startblk;
-        memcpy(&startblk, (const uint8_t *)part + 0x0c, sizeof(startblk));
+        memcpy(&startblk,
+               (const uint8_t *)part + part_start_offset,
+               sizeof(startblk));
         uint64_t addr = (uint64_t)startblk << 9;
         if (src >= addr) {
             uint64_t delta64 = src - addr;
