@@ -340,6 +340,20 @@ static int open_analysis(arm_analysis_t *a, const uint8_t *data, uint32_t size,
         return -1;
     }
 
+    /*
+     * A MediaTek Preloader is not a single linear instruction stream:
+     * code and literal/data regions are interleaved, and ARM/Thumb code
+     * may coexist.  Without SKIPDATA, Capstone stops at the first byte
+     * sequence which is invalid in the selected mode, potentially hiding
+     * all later references.
+     */
+    if (cs_option(a->handle, CS_OPT_SKIPDATA, CS_OPT_ON) != CS_ERR_OK) {
+        fprintf(stderr, "[analyzer] cs_option(CS_OPT_SKIPDATA) failed (%s mode)\n",
+                thumb ? "Thumb" : "ARM");
+        cs_close(&a->handle);
+        return -1;
+    }
+
     a->count = cs_disasm(a->handle, data, size, base, 0, &a->insn);
     if (!a->count) {
         fprintf(stderr,
