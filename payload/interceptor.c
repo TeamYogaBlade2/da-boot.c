@@ -168,47 +168,71 @@ static int create_trampoline(uint32_t target, uint32_t *trampoline_out,
 
     *trampoline_out = (uint32_t)code;
     *jump_back_out = jump_back;
-    return 0;
+	return 0;
 }
 
 // フック実行
 int interceptor_replace(uint32_t target, void *replacement) {
-    uint32_t trampoline, jump_back;
-    if (create_trampoline(target, &trampoline, &jump_back) != 0) return -1;
+	uint32_t target_aligned = target & ~1u;
+	uint32_t patch_size;
+	uint32_t stub_size;
+	uint32_t trampoline, jump_back;
 
-    // トランポリン登録
-    if (g_trampoline_count >= MAX_TRAMPOLINES) return -1;
-    g_trampolines[g_trampoline_count].target = target & ~1;
-    g_trampolines[g_trampoline_count].trampoline = trampoline;
-    g_trampolines[g_trampoline_count].jump_back = jump_back;
-    g_trampoline_count++;
+	if (g_trampoline_count >= MAX_TRAMPOLINES) return -1;
 
-    // 元の関数先頭を書き換え
-    uint32_t *target_ptr = (uint32_t*)(target & ~1);
-    // アラインメント調整
-    if ((uint32_t)target_ptr % 4 != 0) {
-        *(uint16_t*)target_ptr = NOP;
-        target_ptr = (uint32_t*)((uint8_t*)target_ptr + 2);
-    }
-    // LDR.W PC, [PC, #0] + ジャンプ先
-    target_ptr[0] = make_ldr_pc();
-    target_ptr[1] = (uint32_t)replacement | 1;
+	if (create_trampoline(target, &trampoline, &jump_back) != 0) return -1;
+	patch_size = jump_back - target_aligned;
+	/*
+	 * The replacement stub itself is 8 bytes.  An unaligned Thumb entry
+	 * needs an extra leading NOP, so the actual stub occupies 10 bytes.
+	 * create_trampoline() may also extend the copied region beyond the
+	 * 8-byte stub to avoid splitting a 32-bit Thumb-2 instruction.
+	 */
+	stub_size = (target_aligned & 3u) ? 10u : 8u;
+	if (patch_size < stub_size) return -1;
 
-    // キャッシュフラッシュ
-    flush_dcache((uint32_t)(target & ~1), 16);
-    flush_icache();
+	// トランポリン登録
+	g_trampolines[g_trampoline_count].target = target_aligned;
+	g_trampolines[g_trampoline_count].trampoline = trampoline;
+	g_trampolines[g_trampoline_count].jump_back = jump_back;
+	g_trampoline_count++;
 
-    return 0;
+	// 元の関数先頭を書き換え
+	uint8_t *target_ptr = (uint8_t*)(uintptr_t)target_aligned;
+	// アラインメント調整
+	if (target_aligned & 3u) {
+		*(uint16_t*)target_ptr = NOP;
+		target_ptr += 2;
+	}
+	// LDR.W PC, [PC, #0] + ジャンプ先
+	uint32_t jump = make_ldr_pc();
+	uint32_t replacement_addr = (uint32_t)(uintptr_t)replacement | 1u;
+	memcpy(target_ptr, &jump, sizeof(jump));
+	memcpy(target_ptr + 4, &replacement_addr, sizeof(replacement_addr));
+
+	/*
+	 * The trampoline preserves whole instructions, so the target site must
+	 * cover exactly the same range.  Leave any bytes past the 8-byte jump
+	 * stub as Thumb NOPs instead of a partial instruction.
+	 */
+	for (uint32_t off = stub_size; off < patch_size; off += 2)
+		*(uint16_t *)((uint8_t *)target_aligned + off) = NOP;
+
+	// キャッシュフラッシュ
+	flush_dcache(target_aligned, patch_size);
+	flush_icache();
+
+	return 0;
 }
 
 // オリジナル関数アドレス取得
 uint32_t interceptor_original(uint32_t target) {
-    for (int i = 0; i < g_trampoline_count; i++) {
-        if (g_trampolines[i].target == (target & ~1)) {
-            return g_trampolines[i].trampoline;
-        }
-    }
-    return 0;
+	for (int i = 0; i < g_trampoline_count; i++) {
+		if (g_trampolines[i].target == (target & ~1)) {
+			return g_trampolines[i].trampoline | 1u;
+		}
+	}
+	return 0;
 }
 
 // フック解除
