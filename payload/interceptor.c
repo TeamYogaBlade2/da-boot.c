@@ -75,6 +75,21 @@ static uint32_t make_ldr_pc(void) {
     return 0xF000F8DF;
 }
 
+/*
+ * Thumb-2 instructions do not have to start on a 4-byte boundary.  In
+ * particular, mt_part_generic_read() in the Lenovo MT6589 KitKat LK has a
+ * 32-bit STRD at function+0x06.  Do not use uint32_t lvalues for copying
+ * instructions, because that makes Clang emit word accesses to unaligned
+ * addresses on this path.
+ */
+static void write_u16(uint8_t *dst, uint16_t value) {
+    memcpy(dst, &value, sizeof(value));
+}
+
+static void write_u32(uint8_t *dst, uint32_t value) {
+    memcpy(dst, &value, sizeof(value));
+}
+
 // NOP
 static const uint16_t NOP = 0xBF00;
 
@@ -97,7 +112,7 @@ static int create_trampoline(uint32_t target, uint32_t *trampoline_out,
 
     // アラインメント調整
     if ((uint32_t)code % 4 != 0) {
-        *(uint16_t*)(code + tramp_offset) = NOP;
+        write_u16(code + tramp_offset, NOP);
         tramp_offset += 2;
     }
 
@@ -120,13 +135,13 @@ static int create_trampoline(uint32_t target, uint32_t *trampoline_out,
                 uint32_t lit_addr;
                 parse_ldr_w_literal(hw1, hw2, pc, &lit_addr, &rt, &add);
                 uint32_t value = *(uint32_t*)lit_addr;
-                *(uint32_t*)(code + tramp_offset) = make_movw(rt, value & 0xFFFF);
+                write_u32(code + tramp_offset, make_movw(rt, value & 0xFFFF));
                 tramp_offset += 4;
-                *(uint32_t*)(code + tramp_offset) = make_movt(rt, value >> 16);
+                write_u32(code + tramp_offset, make_movt(rt, value >> 16));
                 tramp_offset += 4;
             } else {
                 // そのままコピー
-                *(uint32_t*)(code + tramp_offset) = *(uint32_t*)(orig + offset);
+                memcpy(code + tramp_offset, orig + offset, 4);
                 tramp_offset += 4;
             }
             offset += 4;
@@ -137,12 +152,12 @@ static int create_trampoline(uint32_t target, uint32_t *trampoline_out,
                 uint32_t lit_addr;
                 parse_ldr_literal(hw1, pc, &lit_addr, &rt);
                 uint32_t value = *(uint32_t*)lit_addr;
-                *(uint32_t*)(code + tramp_offset) = make_movw(rt, value & 0xFFFF);
+                write_u32(code + tramp_offset, make_movw(rt, value & 0xFFFF));
                 tramp_offset += 4;
-                *(uint32_t*)(code + tramp_offset) = make_movt(rt, value >> 16);
+                write_u32(code + tramp_offset, make_movt(rt, value >> 16));
                 tramp_offset += 4;
             } else {
-                *(uint16_t*)(code + tramp_offset) = hw1;
+                write_u16(code + tramp_offset, hw1);
                 tramp_offset += 2;
             }
             offset += 2;
@@ -151,15 +166,15 @@ static int create_trampoline(uint32_t target, uint32_t *trampoline_out,
 
     // アラインメント
     if (tramp_offset % 4 != 0) {
-        *(uint16_t*)(code + tramp_offset) = NOP;
+        write_u16(code + tramp_offset, NOP);
         tramp_offset += 2;
     }
 
     // 復帰ジャンプ追加
     uint32_t jump_back = target_aligned + offset;
-    *(uint32_t*)(code + tramp_offset) = make_ldr_pc();
+    write_u32(code + tramp_offset, make_ldr_pc());
     tramp_offset += 4;
-    *(uint32_t*)(code + tramp_offset) = jump_back | 1; // Thumb bit
+    write_u32(code + tramp_offset, jump_back | 1); // Thumb bit
     tramp_offset += 4;
 
     // キャッシュフラッシュ
