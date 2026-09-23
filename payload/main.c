@@ -266,8 +266,18 @@ static void handle_message(protocol_t *proto, message_t *msg) {
             resp.type = RESP_ACK;
             break;
         case MSG_JUMP: {
-            void (*fn)(uint32_t, uint32_t) = (void(*)(uint32_t,uint32_t))msg->jump.addr;
-            fn(msg->jump.r0, msg->jump.r1);
+            if (g_has_preloader_params) {
+                typedef void (*preloader_bldr_jump_fn_t)(
+                    uint32_t addr, uint32_t arg1, uint32_t arg2);
+                preloader_bldr_jump_fn_t fn =
+                    (preloader_bldr_jump_fn_t)(uintptr_t)
+                        (g_preloader_params.ptr_bldr_jump | 1u);
+                fn(msg->jump.addr, msg->jump.r0, msg->jump.r1);
+            } else {
+                void (*fn)(uint32_t, uint32_t) =
+                    (void(*)(uint32_t,uint32_t))msg->jump.addr;
+                fn(msg->jump.r0, msg->jump.r1);
+            }
             resp.type = RESP_NACK;
             resp.err = PROTO_ERR_UNREACHABLE;
             break;
