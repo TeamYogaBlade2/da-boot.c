@@ -10,6 +10,18 @@
 #include "da_params.h"
 #include "util.h"
 
+static soc_type_t payload_soc_type(const soc_info_t *soc) {
+    if (soc->hw_code == soc_mt6589.hw_code)
+        return SOC_MT6589;
+    if (soc->hw_code == soc_mt6572.hw_code)
+        return SOC_MT6572;
+    if (soc->hw_code == soc_mt6582.hw_code)
+        return SOC_MT6582;
+    if (soc->hw_code == soc_mt6595.hw_code)
+        return SOC_MT6595;
+    return SOC_UNKNOWN;
+}
+
 int run_preloader_mode(serial_t *s, const soc_info_t *soc, const char *payload_path,
                        const char *preloader_path, const char *lk_path,
                        const char *input_path, uint32_t input_addr,
@@ -57,7 +69,7 @@ int run_preloader_mode(serial_t *s, const soc_info_t *soc, const char *payload_p
     // PayloadParams初期化
     payload_params_t params;
     payload_params_init(&params, soc->dram_base, soc->dram_base + 0x40000000,
-                        ptr_dl, ptr_ul, soc->hw_code == 0x6589 ? SOC_MT6589 : SOC_MT6572);
+                        ptr_dl, ptr_ul, payload_soc_type(soc));
 
     // Preloader runner params
     preloader_runner_params_t pl_params;
