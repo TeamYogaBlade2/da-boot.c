@@ -1476,10 +1476,21 @@ static int try_mt_part_generic_read_mode(const uint8_t *data, uint32_t size, uin
                         /*
                          * mt_part_generic_read is not required to live
                          * inside the LK image.  The upstream extractor does
-                         * not impose an LK-image range check either.
+                         * not impose an LK-image range check either, but the
+                         * local data-flow resolver is only a heuristic and
+                         * can pick a definition from another basic block.
+                         * Do not accept an arbitrary constant as a callback
+                         * address: the hook path requires Thumb LK code here.
                          */
-                        if (value.value == 0)
+                        if (value.value == 0 ||
+                            !(value.value & 1) ||
+                            !ptr_in_image(&a, value.value, 1)) {
+                            fprintf(stderr,
+                                    "[analyzer] mt_part_generic_read:"
+                                    " reject dataflow candidate 0x%08x\n",
+                                    value.value);
                             continue;
+                        }
 
                         *addr = value.value;
                         close_analysis(&a);
