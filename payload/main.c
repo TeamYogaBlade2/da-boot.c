@@ -431,8 +431,15 @@ uint32_t mt_part_generic_read_hook(void *dev, uint8_t *dst,
         part = (uint32_t*)get_part("boot");
     }
     if (part) {
-        /* part_t.startblk is the second field on 32-bit MT6589 LK. */
-        uint64_t addr = ((uint64_t)part[1] << 9) + 0x800;
+        /*
+         * This Lenovo MT6589 KitKat LK reads the partition start block
+         * from part_t + 0x0c.  The Android boot header is read from the
+         * partition start itself; later kernel/ramdisk reads begin at
+         * partition start + 0x800.
+         */
+        uint32_t startblk;
+        memcpy(&startblk, (const uint8_t *)part + 0x0c, sizeof(startblk));
+        uint64_t addr = (uint64_t)startblk << 9;
         if (src >= addr) {
             uint64_t delta64 = src - addr;
 
