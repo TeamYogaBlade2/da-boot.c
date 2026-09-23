@@ -822,6 +822,181 @@ static uint32_t function_address(const arm_analysis_t *a, size_t begin)
     return (uint32_t)a->insn[begin].address;
 }
 
+static int load_reg_from_mem(const cs_insn *insn, int base_reg, int32_t disp,
+                             int *dst)
+{
+    const cs_arm *arm;
+
+    if (!insn || !insn->detail || insn->id != ARM_INS_LDR)
+        return 0;
+
+    arm = &insn->detail->arm;
+    if (arm->op_count < 2 ||
+        arm->operands[0].type != ARM_OP_REG ||
+        arm->operands[1].type != ARM_OP_MEM ||
+        reg_index(arm->operands[1].mem.base) != base_reg ||
+        arm->operands[1].mem.index != ARM_REG_INVALID ||
+        arm->operands[1].mem.disp != disp)
+        return 0;
+
+    *dst = reg_index(arm->operands[0].reg);
+    return *dst >= 0;
+}
+
+static int has_indirect_call_after(const arm_analysis_t *a, size_t load_idx,
+                                   size_t end, int reg)
+{
+    size_t limit = load_idx + 8;
+
+    if (limit > end)
+        limit = end;
+
+    for (size_t i = load_idx + 1; i < limit; i++) {
+        const cs_arm *arm;
+
+        if (a->insn[i].id == ARM_INS_BLX && a->insn[i].detail) {
+            arm = &a->insn[i].detail->arm;
+            if (arm->op_count >= 1 && arm->operands[0].type == ARM_OP_REG &&
+                reg_index(arm->operands[0].reg) == reg)
+                return 1;
+        }
+
+        if (instruction_writes_reg(&a->insn[i], reg))
+            break;
+    }
+
+    return 0;
+}
+
+static int instruction_has_imm(const cs_insn *insn, uint32_t value)
+{
+    const cs_arm *arm;
+
+    if (!insn || !insn->detail)
+        return 0;
+
+    arm = &insn->detail->arm;
+    for (unsigned i = 0; i < arm->op_count; i++) {
+        if (arm->operands[i].type == ARM_OP_IMM &&
+            (uint32_t)arm->operands[i].imm == value)
+            return 1;
+    }
+
+    return 0;
+}
+
+static int generic_read_signature_score(const arm_analysis_t *a,
+                                        size_t begin, size_t end)
+{
+    int dev_reg = -1;
+    int read_reg = -1;
+    int write_reg = -1;
+    int have_blkdev = 0;
+    int have_read = 0;
+    int have_write = 0;
+    int have_block_size = 0;
+    int have_shift9 = 0;
+
+    for (size_t i = begin; i < end; i++) {
+        if (load_reg_from_mem(&a->insn[i], 0, 0x8, &dev_reg))
+            continue;
+
+        if (load_reg_from_mem(&a->insn[i], 0, 0x4, &read_reg))
+            have_blkdev = 1;
+
+        if (dev_reg >= 0 && load_reg_from_mem(&a->insn[i], dev_reg, 0xc, &read_reg) &&
+            has_indirect_call_after(a, i, end, read_reg))
+            have_read = 1;
+
+        if (dev_reg >= 0 && load_reg_from_mem(&a->insn[i], dev_reg, 0x10, &write_reg) &&
+            has_indirect_call_after(a, i, end, write_reg))
+            have_write = 1;
+
+        if (instruction_has_imm(&a->insn[i], 0x200))
+            have_block_size = 1;
+
+        if (strstr(a->insn[i].mnemonic, "lsr") &&
+            strstr(a->insn[i].op_str, "#0x9"))
+            have_shift9 = 1;
+    }
+
+    /*
+     * mt_part_generic_read() on MT6589/eMMC has:
+     *   dev->blkdev at +0x8
+     *   block_read at +0xc
+     *   block_read at +0x10
+     *   512-byte blocks (0x200 / <<9)
+     *   dev->read/dev->blkdev field access at +0x4
+     */
+    return (dev_reg >= 0 ? 2 : 0) +
+           (have_blkdev ? 1 : 0) +
+           (have_read ? 3 : 0) +
+           (have_write ? 3 : 0) +
+           (have_block_size ? 2 : 0) +
+           (have_shift9 ? 1 : 0);
+}
+
+static int find_mt_part_generic_read_signature(const arm_analysis_t *a,
+                                               size_t before_idx, uint32_t *addr)
+{
+    size_t best_begin = SIZE_MAX;
+    size_t best_end = 0;
+    int best_score = 0;
+    uint32_t anchor_va;
+
+    if (before_idx >= a->count)
+        return -1;
+
+    anchor_va = (uint32_t)a->insn[before_idx].address;
+
+    for (size_t begin = 0; begin < before_idx; begin++) {
+        uint32_t fn_va;
+        size_t end;
+        int score;
+
+        if (!is_prologue(&a->insn[begin]))
+            continue;
+
+        fn_va = (uint32_t)a->insn[begin].address;
+        if (anchor_va < fn_va || anchor_va - fn_va > MAX_FUNCTION_SEARCH)
+            continue;
+
+        end = begin + 1;
+        while (end < a->count) {
+            if (is_prologue(&a->insn[end]))
+                break;
+            if ((uint32_t)a->insn[end].address - fn_va > MAX_FUNCTION_SEARCH)
+                break;
+            end++;
+        }
+
+        score = generic_read_signature_score(a, begin, end);
+        if (score < 10)
+            continue;
+
+        if (best_begin == SIZE_MAX || score > best_score ||
+            (score == best_score && begin > best_begin)) {
+            best_begin = begin;
+            best_end = end;
+            best_score = score;
+        }
+    }
+
+    if (best_begin == SIZE_MAX)
+        return -1;
+
+    *addr = function_address(a, best_begin);
+    fprintf(stderr,
+            "[analyzer] mt_part_generic_read: signature candidate function="
+            "[0x%08x,0x%08x) score=%d\n",
+            (uint32_t)a->insn[best_begin].address,
+            best_end < a->count ? (uint32_t)a->insn[best_end].address
+                                : (uint32_t)(a->insn[a->count - 1].address +
+                                             a->insn[a->count - 1].size),
+            best_score);
+    return 0;
+}
+
 static int find_string_function(const arm_analysis_t *a, uint32_t str_va,
                                size_t *begin, size_t *end, size_t *ref_idx)
 {
@@ -1251,12 +1426,20 @@ static int try_mt_part_generic_read_mode(const uint8_t *data, uint32_t size, uin
 
         uint32_t str_va = base + (uint32_t)(found - data);
         size_t ref;
+        int found_read_store = 0;
         if (find_reference(&a, str_va, &ref) != 0)
             continue;
 
         size_t begin, end;
         if (find_function_range(&a, ref, &begin, &end) != 0)
             continue;
+
+        /*
+         * mt_part_register_device() has an early POP {..,pc}, but the
+         * callback-assignment blocks are still part of the same function.
+         */
+        while (end < a.count && !is_prologue(&a.insn[end]))
+            end++;
 
         size_t block_begin = begin;
         for (size_t i = begin; i < end; i++) {
@@ -1276,6 +1459,7 @@ static int try_mt_part_generic_read_mode(const uint8_t *data, uint32_t size, uin
                             arm->operands[1].type != ARM_OP_MEM ||
                             arm->operands[1].mem.disp != 0x10)
                             continue;
+                        found_read_store = 1;
 
                         src = reg_index(arm->operands[0].reg);
                         if (src < 0)
@@ -1305,6 +1489,16 @@ static int try_mt_part_generic_read_mode(const uint8_t *data, uint32_t size, uin
 
                 block_begin = i + 1;
             }
+        }
+
+        /*
+         * On LK images with runtime-relocated GOT/BSS, the callback pointer at
+         * STR [dev, #0x10] is not present in the raw file.  Recover the actual
+         * implementation from its code shape instead.
+         */
+        if (found_read_store && find_mt_part_generic_read_signature(&a, ref, addr) == 0) {
+            close_analysis(&a);
+            return 0;
         }
     }
 
