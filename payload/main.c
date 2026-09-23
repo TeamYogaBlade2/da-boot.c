@@ -111,11 +111,21 @@ void enter_main(uint32_t entry, uint32_t runtime_base, uint32_t stack_top) {
 __attribute__((noreturn, noinline))
 void payload_bootstrap(uint32_t runtime_base) {
     payload_params_t *params = &g_params;
-    uint32_t image_start = (uint32_t)_image_start;
-    uint32_t bss_start = (uint32_t)_bss_start;
-    uint32_t bss_end = (uint32_t)_bss_end;
-    uint32_t rel_start = (uint32_t)_rel_dyn_start;
-    uint32_t rel_end = (uint32_t)_rel_dyn_end;
+    /*
+     * The startup code relocates the GOT before entering C.  Linker
+     * symbols referenced through that GOT therefore evaluate to runtime
+     * addresses here, while the relocation entries themselves use
+     * image-relative offsets.  Convert the runtime addresses back to
+     * image-relative offsets before adding them to runtime_base/active_base.
+     *
+     * _image_start is explicitly zero in linker.ld, so keep it as zero
+     * rather than depending on how the compiler materializes that symbol.
+     */
+    uint32_t image_start = 0;
+    uint32_t bss_start = (uint32_t)_bss_start - runtime_base;
+    uint32_t bss_end = (uint32_t)_bss_end - runtime_base;
+    uint32_t rel_start = (uint32_t)_rel_dyn_start - runtime_base;
+    uint32_t rel_end = (uint32_t)_rel_dyn_end - runtime_base;
     uint32_t raw_size = bss_start - image_start;
     uint32_t image_size = bss_end - image_start;
     uint32_t params_offset =
