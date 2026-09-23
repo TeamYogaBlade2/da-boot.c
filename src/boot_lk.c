@@ -18,6 +18,7 @@
 #define MTK_IMAGE_HEADER_SIZE 0x200u
 #define MTK_IMAGE_ALIGN_SIZE  0x10u
 #define MTK_BOOT_PAGE_ALIGN(size) (((size) + 0x7ffu) & ~0x7ffu)
+#define MT6589_LK_BOOTIMG_READ_SLACK 0x1000u
 
 /* Fixed load addresses used by the Blade 10 KitKat LK. */
 #define MT6589_LK_KERNEL_ADDR  0x80008000u
@@ -99,6 +100,39 @@ static int wrap_file_as_mtk_image(const char *input_path,
         *data_size = size;
     free(data);
     return ret;
+}
+
+/*
+ * MT6589 KitKat LK does not read exactly the Android boot image size.
+ *
+ * mboot_android_load_bootimg() uses:
+ *
+ *     start = partition_start + 0x800
+ *     size  = (kernel_pages + ramdisk_pages + 2) * 0x800
+ *
+ * The standard mkbootimg output is two 0x800 pages shorter than that
+ * source window.  Keep zero-filled backing storage for the extra 0x1000
+ * bytes so the DA-side read hook never accesses beyond the uploaded
+ * scratch image.
+ */
+static int pad_lk_bootimg_read_window(uint8_t **data, uint32_t *size) {
+    uint32_t padded_size;
+    uint8_t *padded;
+
+    if (!data || !*data || !size ||
+        *size > UINT32_MAX - MT6589_LK_BOOTIMG_READ_SLACK)
+        return -1;
+
+    padded_size = *size + MT6589_LK_BOOTIMG_READ_SLACK;
+    padded = calloc(1, padded_size);
+    if (!padded)
+        return -1;
+
+    memcpy(padded, *data, *size);
+    free(*data);
+    *data = padded;
+    *size = padded_size;
+    return 0;
 }
 
 // boot_arg構造体 (MT6589)
@@ -423,6 +457,14 @@ int run_lk_mode(serial_t *s, const soc_info_t *soc, const char *payload_path,
         }
     } else {
         fprintf(stderr, "No boot image provided\n");
+        free(payload);
+        free(lk_data);
+        return -1;
+    }
+
+    if (pad_lk_bootimg_read_window(&bootimg_data, &bootimg_size) != 0) {
+        fprintf(stderr, "Failed to prepare MT6589 LK boot image read window\n");
+        free(bootimg_data);
         free(payload);
         free(lk_data);
         return -1;
