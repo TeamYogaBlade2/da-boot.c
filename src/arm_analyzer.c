@@ -1280,10 +1280,21 @@ static int try_mt_part_generic_read_mode(const uint8_t *data, uint32_t size, uin
                         src = reg_index(arm->operands[0].reg);
                         if (src < 0)
                             continue;
-                        value = resolve_reg_before(&a, block_begin, j, src, 0);
+                        /*
+                         * The STR source may be defined in a predecessor
+                         * basic block.  The upstream extractor resolves the
+                         * block's incoming register state, so do not limit
+                         * the backwards walk to block_begin here.
+                         */
+                        value = resolve_reg_before(&a, begin, j, src, 0);
                         if (!value_is_full(value))
                             continue;
-                        if (!ptr_in_image(&a, value.value, 1))
+                        /*
+                         * mt_part_generic_read is not required to live
+                         * inside the LK image.  The upstream extractor does
+                         * not impose an LK-image range check either.
+                         */
+                        if (value.value == 0)
                             continue;
 
                         *addr = value.value;
