@@ -162,6 +162,7 @@ int protocol_read_response(protocol_t *p, response_t *resp) {
         resp->type = p->buf[off++];
         if (resp->type == RESP_LOG) {
             if (size > 1) {
+                fputs("[payload] ", stdout);
                 fwrite(&p->buf[1], 1, size - 1, stdout);
                 fflush(stdout);
             }
