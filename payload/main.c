@@ -81,7 +81,9 @@ static int usb_recv_wrapper(uint8_t *buf, uint32_t len, uint32_t timeout) {
 }
 
 // LKフック関数
-uint32_t mt_part_generic_read_hook(void *dev, uint64_t src, uint8_t *dst, uint32_t size);
+uint32_t mt_part_generic_read_hook(void *dev, uint8_t *dst,
+                                   uint32_t src_lo, uint32_t src_hi,
+                                   uint32_t size);
 
 typedef struct {
     uint32_t r_offset;
