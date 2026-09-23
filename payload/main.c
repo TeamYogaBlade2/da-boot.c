@@ -81,10 +81,9 @@ static int usb_recv_wrapper(uint8_t *buf, uint32_t len, uint32_t timeout) {
 }
 
 // LKフック関数
-uint32_t mt_part_generic_read_hook(void *dev, uint8_t *dst,
+uint32_t mt_part_generic_read_hook(void *dev, uint32_t read_cb,
                                    uint32_t src_lo, uint32_t src_hi,
-                                   uint32_t size);
-
+                                   uint8_t *dst, uint32_t size);
 typedef struct {
     uint32_t r_offset;
     uint32_t r_info;
@@ -403,18 +402,20 @@ static void handle_message(protocol_t *proto, message_t *msg) {
 }
 
 /*
- * MT6589's mt_part_generic_read() is:
+ * This MT6589 LK installs a six-argument read callback in dev + 0x10:
  *
- *     int mt_part_generic_read(part_dev_t *dev, u64 src,
- *                              uchar *dst, int size);
+ *     uint32_t read(part_dev_t *dev, uint32_t read_cb,
+ *                   uint32_t src_lo, uint32_t src_hi,
+ *                   uchar *dst, uint32_t size);
  *
- * With ARM EABI the 64-bit src is passed in r2/r3 because r1 is already
- * occupied by dst. The fifth argument, size, is on the stack. Using a
- * uint64_t parameter here would shift dst/src/size and corrupt the hook.
+ * mboot_android_load_bootimg() passes the current dev->read function
+ * pointer itself as the second argument. Keep the argument positions
+ * exactly as emitted by the stock LK; collapsing src into uint64_t would
+ * shift every argument after r1 on 32-bit ARM.
  */
-uint32_t mt_part_generic_read_hook(void *dev, uint8_t *dst,
+uint32_t mt_part_generic_read_hook(void *dev, uint32_t read_cb,
                                    uint32_t src_lo, uint32_t src_hi,
-                                   uint32_t size) {
+                                   uint8_t *dst, uint32_t size) {
     uint64_t src = ((uint64_t)src_hi << 32) | src_lo;
     static uint32_t log_count;
 
@@ -433,32 +434,25 @@ uint32_t mt_part_generic_read_hook(void *dev, uint8_t *dst,
     }
 
     // 元の関数を呼び出す
-    uint32_t (*orig)(void*, uint8_t*, uint32_t, uint32_t, uint32_t) =
+    uint32_t (*orig)(void*, uint32_t, uint32_t, uint32_t, uint8_t*, uint32_t) =
         (void*)interceptor_original(g_lk_params.ptr_mt_part_generic_read);
     if (!orig) orig = (void*)g_lk_params.ptr_mt_part_generic_read;
 
     // mt_part_get_partition を呼び出し
     uint32_t (*get_part)(const char*) = (void*)g_lk_params.ptr_mt_part_get_partition;
     uint32_t *part = (uint32_t*)get_part("BOOTIMG");
-    uint32_t part_start_offset = 0x0c;
     if (!part) {
         part = (uint32_t*)get_part("boot");
-        part_start_offset = 0x00;
     }
     if (part) {
         /*
-         * The returned partition descriptor differs depending on the
-         * partition name used to look it up:
-         *
-         *   BOOTIMG -> start block at +0x0c
-         *   boot    -> start block at +0x00
-         *
-         * This matches the stock MT6589 KitKat LK and the upstream
-         * mt6572-mainline/da-boot implementation.
+         * The returned partition descriptor has a common layout for this
+         * LK.  +0x0c is the partition start block in 512-byte sectors;
+         * the lookup name only selects the partition entry.
          */
         uint32_t startblk;
         memcpy(&startblk,
-               (const uint8_t *)part + part_start_offset,
+               (const uint8_t *)part + 0x0c,
                sizeof(startblk));
         uint64_t addr = (uint64_t)startblk << 9;
         if (src >= addr) {
@@ -484,7 +478,7 @@ uint32_t mt_part_generic_read_hook(void *dev, uint8_t *dst,
             }
         }
     }
-    return orig(dev, dst, src_lo, src_hi, size);
+    return orig(dev, read_cb, src_lo, src_hi, dst, size);
 }
 
 void main(uint32_t runtime_base) {

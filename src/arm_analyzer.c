@@ -440,6 +440,34 @@ static int is_block_terminator(const cs_insn *insn)
     }
 }
 
+/* Return the immediate target of a conditional/unconditional branch. */
+static int branch_target(const cs_insn *insn, uint32_t *target)
+{
+    const cs_arm *arm;
+
+    if (!insn || !insn->detail)
+        return -1;
+
+    switch (insn->id) {
+    case ARM_INS_B:
+    case ARM_INS_CBZ:
+    case ARM_INS_CBNZ:
+        break;
+    default:
+        return -1;
+    }
+
+    arm = &insn->detail->arm;
+    for (unsigned i = 0; i < arm->op_count; i++) {
+        if (arm->operands[i].type == ARM_OP_IMM) {
+            *target = (uint32_t)arm->operands[i].imm;
+            return 0;
+        }
+    }
+
+    return -1;
+}
+
 static int call_target(const arm_analysis_t *a, size_t begin, size_t idx,
                        uint32_t *target)
 {
@@ -1483,6 +1511,145 @@ static int resolve_indexed_ldr_value(const arm_analysis_t *a, size_t begin,
     return -1;
 }
 
+/*
+ * Resolve the callback stored in dev + 0x10 by following the predecessor
+ * edge into the block which performs the indexed function-table load.
+ *
+ * On the Lenovo MT6589 KitKat LK this is:
+ *
+ *     0x81e053f2: cbz  r2, 0x81e05432
+ *     0x81e05432: ldr  r2, [literal]  ; r2 = 0x14c
+ *     0x81e05434: ldr  r3, [r3, r2]
+ *     0x81e05436: str  r3, [r4, #0x10]
+ *
+ * The table base in r3 is established before the predecessor branch.
+ * Resolving it from that predecessor avoids crossing later BL calls that
+ * clobber r3 and avoids selecting an unrelated data pointer such as dev+8.
+ */
+static int resolve_mt_part_read_callback(const arm_analysis_t *a,
+                                         size_t function_begin,
+                                         size_t block_begin,
+                                         size_t str_idx,
+                                         uint32_t *value)
+{
+    const cs_insn *str_insn = &a->insn[str_idx];
+    const cs_arm *str_arm;
+    int read_reg;
+    int base_reg = -1;
+    int index_reg = -1;
+    size_t load_idx = SIZE_MAX;
+    size_t predecessor = SIZE_MAX;
+    uint32_t index_value = 0;
+    uint32_t block_va;
+    int32_t table_disp = 0;
+    int have_index = 0;
+
+    if (!str_insn->detail || str_insn->id != ARM_INS_STR)
+        return -1;
+
+    str_arm = &str_insn->detail->arm;
+    if (str_arm->op_count < 2 ||
+        str_arm->operands[0].type != ARM_OP_REG ||
+        str_arm->operands[1].type != ARM_OP_MEM ||
+        str_arm->operands[1].mem.disp != 0x10)
+        return -1;
+
+    read_reg = reg_index(str_arm->operands[0].reg);
+    if (read_reg < 0)
+        return -1;
+
+    /* Find the indexed LDR which defines the STR source register. */
+    for (size_t i = block_begin; i < str_idx; i++) {
+        const cs_insn *insn = &a->insn[i];
+        const cs_arm *arm;
+        int dst;
+        int base;
+        int index;
+
+        if (insn->id != ARM_INS_LDR || !insn->detail)
+            continue;
+
+        arm = &insn->detail->arm;
+        if (arm->op_count < 2 ||
+            arm->operands[0].type != ARM_OP_REG ||
+            arm->operands[1].type != ARM_OP_MEM ||
+            arm->operands[1].mem.index == ARM_REG_INVALID)
+            continue;
+
+        dst = reg_index(arm->operands[0].reg);
+        if (dst != read_reg)
+            continue;
+
+        base = reg_index(arm->operands[1].mem.base);
+        index = reg_index(arm->operands[1].mem.index);
+        if (base < 0 || index < 0)
+            continue;
+
+        table_disp = arm->operands[1].mem.disp;
+        load_idx = i;
+        base_reg = base;
+        index_reg = index;
+    }
+
+    if (load_idx == SIZE_MAX)
+        return -1;
+
+    /* The table index is normally a PC-relative literal load. */
+    for (size_t i = block_begin; i < load_idx; i++) {
+        const cs_insn *insn = &a->insn[i];
+        const cs_arm *arm;
+        int dst;
+
+        if (insn->id != ARM_INS_LDR || !insn->detail)
+            continue;
+
+        arm = &insn->detail->arm;
+        if (arm->op_count < 2 ||
+            arm->operands[0].type != ARM_OP_REG)
+            continue;
+
+        dst = reg_index(arm->operands[0].reg);
+        if (dst != index_reg)
+            continue;
+
+        if (literal_value(a, insn, &index_value) == 0)
+            have_index = 1;
+    }
+
+    if (!have_index)
+        return -1;
+
+    /* Find the branch which enters this block and carry state from there. */
+    block_va = (uint32_t)a->insn[block_begin].address;
+    for (size_t i = function_begin; i < block_begin; i++) {
+        uint32_t target;
+
+        if (branch_target(&a->insn[i], &target) == 0 && target == block_va)
+            predecessor = i;
+    }
+
+    if (predecessor == SIZE_MAX)
+        return -1;
+
+    reg_value_t base_value =
+        resolve_reg_before(a, function_begin, predecessor, base_reg, 0);
+    if (!value_is_full(base_value))
+        return -1;
+
+    int64_t table_address = (int64_t)(uint32_t)base_value.value +
+                            (int64_t)index_value + table_disp;
+    if (table_address < 0 || table_address > UINT32_MAX)
+        return -1;
+
+    if (read_u32_va(a, (uint32_t)table_address, value) != 0)
+        return -1;
+
+    if (*value == 0 || !(*value & 1) || !ptr_in_image(a, *value, 1))
+        return -1;
+
+    return 0;
+}
+
 static int try_mt_part_generic_read_mode(const uint8_t *data, uint32_t size, uint32_t base,
                                          int thumb, uint32_t *addr)
 {
@@ -1536,6 +1703,28 @@ static int try_mt_part_generic_read_mode(const uint8_t *data, uint32_t size, uin
                             arm->operands[1].mem.disp != 0x10)
                             continue;
                         found_read_store = 1;
+
+                        /*
+                         * For MT6589 the actual dev->read callback is loaded
+                         * from a function-pointer table in this branch.
+                         * Resolve that value before falling back to the
+                         * generic-read signature heuristic; the latter can
+                         * otherwise select a different helper function.
+                         */
+                        {
+                            uint32_t callback;
+
+                            if (resolve_mt_part_read_callback(
+                                    &a, begin, block_begin, j, &callback) == 0) {
+                                fprintf(stderr,
+                                        "[analyzer] mt_part_generic_read:"
+                                        " resolved dev->read callback=0x%08x\n",
+                                        callback);
+                                *addr = callback;
+                                close_analysis(&a);
+                                return 0;
+                            }
+                        }
 
                         src = reg_index(arm->operands[0].reg);
                         if (src < 0)
