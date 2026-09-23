@@ -92,6 +92,13 @@ int run_preloader_mode(serial_t *s, const soc_info_t *soc, const char *payload_p
         return -1;
     }
 
+    if (jump_addr == 0 && !input_path) {
+        printf("DA is ready; no final jump requested\n");
+        free(pl_data);
+        free(payload);
+        return 0;
+    }
+
     // ジャンプ
     printf("Jumping to DA...\n");
     if (mtk_jump_da(s, da_addr) != 0) {
