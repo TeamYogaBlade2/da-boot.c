@@ -9,7 +9,10 @@ OBJS = $(SRCS:.c=.o)
 DEPS = $(OBJS:.o=.d)
 TARGET = da-boot
 
-all: $(TARGET)
+all: $(TARGET) payload
+
+payload:
+	$(MAKE) -C payload
 
 $(TARGET): $(OBJS)
 	$(CC) -o $@ $^ $(LDFLAGS)
@@ -21,5 +24,6 @@ $(TARGET): $(OBJS)
 
 clean:
 	rm -f $(OBJS) $(DEPS) $(TARGET)
+	$(MAKE) -C payload clean
 
-.PHONY: all clean
+.PHONY: all clean payload
