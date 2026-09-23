@@ -66,10 +66,16 @@ static int value_is_full(reg_value_t v)
     return v.mask == 3;
 }
 
-static uint32_t arm_pc(const arm_analysis_t *a, const cs_insn *insn)
+static uint32_t arm_register_pc(const arm_analysis_t *a, const cs_insn *insn)
 {
-    uint32_t pc = (uint32_t)insn->address + (a->thumb ? 4u : 8u);
-    return pc & ~3u;
+    return (uint32_t)insn->address + (a->thumb ? 4u : 8u);
+}
+
+static uint32_t arm_literal_pc(const arm_analysis_t *a, const cs_insn *insn)
+{
+    uint32_t pc = arm_register_pc(a, insn);
+
+    return a->thumb ? (pc & ~3u) : pc;
 }
 
 static int read_u32_va(const arm_analysis_t *a, uint32_t va, uint32_t *out)
@@ -128,7 +134,7 @@ static int literal_value(const arm_analysis_t *a, const cs_insn *insn, uint32_t 
         return -1;
 
     op = &insn->detail->arm.operands[1];
-    pool = arm_pc(a, insn) + (int32_t)op->mem.disp;
+    pool = arm_literal_pc(a, insn) + (int32_t)op->mem.disp;
     if (read_u32_va(a, pool, out) != 0)
         return -1;
 
@@ -160,7 +166,7 @@ static int resolve_operand_value(const arm_analysis_t *a, size_t begin, size_t a
 
     case ARM_OP_REG:
         if (op->reg == ARM_REG_PC) {
-            *value = arm_pc(a, &a->insn[at]);
+            *value = arm_register_pc(a, &a->insn[at]);
             return 0;
         }
 
@@ -230,7 +236,7 @@ static int instruction_refers_to(const arm_analysis_t *a, const cs_insn *insn,
                 reg_value_t old_dst =
                     resolve_reg_before(a, 0, (size_t)(insn - a->insn), dst, 0);
                 if (value_is_full(old_dst)) {
-                    result = old_dst.value + arm_pc(
+                    result = old_dst.value + arm_register_pc(
                         a, &a->insn[(size_t)(insn - a->insn)]);
                     if (result == target_va)
                         return 1;
@@ -243,7 +249,7 @@ static int instruction_refers_to(const arm_analysis_t *a, const cs_insn *insn,
             if (arm->operands[1].type == ARM_OP_REG &&
                 arm->operands[1].reg == ARM_REG_PC &&
                 resolve_operand_value(a, 0, at, &arm->operands[2], &right) == 0) {
-                left = arm_pc(a, insn);
+                left = arm_register_pc(a, insn);
                 result = is_add ? left + right : left - right;
                 if (result == target_va)
                     return 1;
@@ -252,7 +258,7 @@ static int instruction_refers_to(const arm_analysis_t *a, const cs_insn *insn,
             if (arm->operands[2].type == ARM_OP_REG &&
                 arm->operands[2].reg == ARM_REG_PC &&
                 resolve_operand_value(a, 0, at, &arm->operands[1], &left) == 0) {
-                right = arm_pc(a, insn);
+                right = arm_register_pc(a, insn);
                 result = is_add ? left + right : left - right;
                 if (result == target_va)
                     return 1;
@@ -581,7 +587,7 @@ static reg_value_t resolve_definition(const arm_analysis_t *a, size_t begin, siz
             return reg_full((uint32_t)arm->operands[1].imm);
         if (arm->operands[1].type == ARM_OP_REG &&
             arm->operands[1].reg == ARM_REG_PC)
-            return reg_full(arm_pc(a, insn));
+            return reg_full(arm_register_pc(a, insn));
         if (arm->operands[1].type == ARM_OP_REG) {
             int src = reg_index(arm->operands[1].reg);
             if (src >= 0)
@@ -630,7 +636,7 @@ static reg_value_t resolve_definition(const arm_analysis_t *a, size_t begin, siz
                 break;
 
             if (arm->operands[1].reg == ARM_REG_PC) {
-                right = reg_full(arm_pc(a, insn));
+                right = reg_full(arm_register_pc(a, insn));
             } else {
                 src = reg_index(arm->operands[1].reg);
                 if (src < 0)
@@ -662,7 +668,7 @@ static reg_value_t resolve_definition(const arm_analysis_t *a, size_t begin, siz
             break;
 
         if (arm->operands[1].reg == ARM_REG_PC)
-            left = reg_full(arm_pc(a, insn));
+            left = reg_full(arm_register_pc(a, insn));
         else {
             src = reg_index(arm->operands[1].reg);
             if (src < 0)
