@@ -506,6 +506,7 @@ int run_lk_mode(serial_t *s, const soc_info_t *soc, const char *payload_path,
     lk_params.ptr_mt_part_generic_read = mt_part_generic_read | 1; // Thumb
     lk_params.ptr_mt_part_get_partition = mt_part_get_partition | 1;
     lk_params.bootimg_scratch_addr = bootimg_addr;
+    lk_params.bootimg_scratch_size = bootimg_size;
     message_init_set_params_lk(&msg, &lk_params);
     protocol_send_message(&proto, &msg);
     protocol_read_response(&proto, &resp);
@@ -513,7 +514,11 @@ int run_lk_mode(serial_t *s, const soc_info_t *soc, const char *payload_path,
     // フック設定
     message_init_hook(&msg, HOOK_MT_PART_GENERIC_READ);
     protocol_send_message(&proto, &msg);
-    protocol_read_response(&proto, &resp);
+    if (protocol_read_response(&proto, &resp) != 0 || resp.type != RESP_ACK) {
+        fprintf(stderr, "Failed to install mt_part_generic_read hook\n");
+        free(payload);
+        return -1;
+    }
 
     // LKアップロード
     printf("Uploading LK to 0x%x...\n", lk_base);

@@ -321,9 +321,13 @@ static void handle_message(protocol_t *proto, message_t *msg) {
         }
         case MSG_HOOK:
             if (msg->hook == HOOK_MT_PART_GENERIC_READ && g_has_lk_params) {
-                interceptor_replace(g_lk_params.ptr_mt_part_generic_read | 1,
-                                    (void*)mt_part_generic_read_hook);
-                resp.type = RESP_ACK;
+                if (interceptor_replace(g_lk_params.ptr_mt_part_generic_read | 1,
+                                         (void*)mt_part_generic_read_hook) == 0) {
+                    resp.type = RESP_ACK;
+                } else {
+                    resp.type = RESP_NACK;
+                    resp.err = PROTO_ERR_NOT_SUPPORTED;
+                }
             } else {
                 resp.type = RESP_NACK;
                 resp.err = PROTO_ERR_NOT_SUPPORTED;
@@ -388,10 +392,20 @@ uint32_t mt_part_generic_read_hook(void *dev, uint64_t src, uint8_t *dst, uint32
     }
     if (part) {
         uint64_t addr = ((uint64_t)part[offset/4]) << 9;
-        uint32_t delta = (uint32_t)(src - addr);
-        if (delta <= 0x1000) {
-            memcpy(dst, (void*)(g_lk_params.bootimg_scratch_addr + delta), size);
-            return size;
+        if (src >= addr) {
+            uint64_t delta64 = src - addr;
+
+            if (delta64 <= 0x1000 &&
+                delta64 <= g_lk_params.bootimg_scratch_size) {
+                uint32_t delta = (uint32_t)delta64;
+
+                if (size <= g_lk_params.bootimg_scratch_size - delta) {
+                    memcpy(dst,
+                           (void*)(g_lk_params.bootimg_scratch_addr + delta),
+                           size);
+                    return size;
+                }
+            }
         }
     }
     return orig(dev, src, dst, size);

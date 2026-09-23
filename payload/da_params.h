@@ -42,6 +42,7 @@ typedef struct {
     uint32_t ptr_mt_part_generic_read;
     uint32_t ptr_mt_part_get_partition;
     uint32_t bootimg_scratch_addr;
+    uint32_t bootimg_scratch_size;
 } lk_runner_params_t;
 
 // 関数宣言

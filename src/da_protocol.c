@@ -58,6 +58,7 @@ int protocol_send_message(protocol_t *p, const message_t *msg) {
                 memcpy(&buf[len], &msg->set_params.lk.ptr_mt_part_generic_read, 4); len += 4;
                 memcpy(&buf[len], &msg->set_params.lk.ptr_mt_part_get_partition, 4); len += 4;
                 memcpy(&buf[len], &msg->set_params.lk.bootimg_scratch_addr, 4); len += 4;
+                memcpy(&buf[len], &msg->set_params.lk.bootimg_scratch_size, 4); len += 4;
             }
             break;
         default:
@@ -123,6 +124,7 @@ int protocol_read_message(protocol_t *p, message_t *msg) {
                 memcpy(&msg->set_params.lk.ptr_mt_part_generic_read, &p->buf[off], 4); off += 4;
                 memcpy(&msg->set_params.lk.ptr_mt_part_get_partition, &p->buf[off], 4); off += 4;
                 memcpy(&msg->set_params.lk.bootimg_scratch_addr, &p->buf[off], 4); off += 4;
+                memcpy(&msg->set_params.lk.bootimg_scratch_size, &p->buf[off], 4); off += 4;
             }
             break;
         default:
