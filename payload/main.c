@@ -177,6 +177,9 @@ void payload_bootstrap(uint32_t runtime_base) {
                 *target += delta;
             }
         }
+
+        /* The relocated text must be visible to the instruction cache. */
+        flush_icache();
     } else {
         /*
          * The startup code already fixed the R_ARM_RELATIVE relocations for
@@ -220,9 +223,6 @@ void payload_bootstrap(uint32_t runtime_base) {
         uart_print("Failed to reserve payload stack\n");
         while (1);
     }
-
-    flush_dcache(active_base, image_size);
-    flush_icache();
 
     /*
      * main() is Thumb code.  Preserve its Thumb bit when deriving its
