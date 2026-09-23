@@ -10,6 +10,7 @@
 #include "image.h"
 #include "da_params.h"
 #include "util.h"
+#include "boot.h"
 
 /* MediaTek AP image header used by stock LK for KERNEL/ROOTFS. */
 #define MTK_IMAGE_MAGIC       0x58881688u
@@ -124,10 +125,11 @@ typedef struct {
 
 #define BOOT_ARG_MAGIC 0x504c504c
 
-static void boot_arg_init(boot_arg_t *ba, uint32_t dram_size_per_rank, uint32_t dram_ranks) {
+static void boot_arg_init(boot_arg_t *ba, uint32_t dram_size_per_rank,
+                          uint32_t dram_ranks, uint32_t lk_mode) {
     memset(ba, 0, sizeof(*ba));
     ba->magic = BOOT_ARG_MAGIC;
-    ba->boot_mode = 0; // NORMAL_BOOT
+    ba->boot_mode = lk_mode;
     ba->e_flag = 0;
     ba->log_port = 0x11006000; // MT6589 UART0
     ba->log_baudrate = 921600;
@@ -142,19 +144,27 @@ static void boot_arg_init(boot_arg_t *ba, uint32_t dram_size_per_rank, uint32_t 
 
 int run_lk_mode(serial_t *s, const soc_info_t *soc, const char *payload_path,
                 const char *preloader_path, const char *lk_path,
-                const char *input_path, uint32_t input_addr,
+                const upload_file_t *inputs, size_t input_count,
                 const char *kernel_path, const char *ramdisk_path,
-                uint32_t dram_size_per_rank, uint32_t dram_ranks) {
-    (void)input_addr;
-
+                uint32_t preloader_addr_hint, uint32_t lk_addr_hint,
+                uint32_t dram_size_per_rank, uint32_t dram_ranks,
+                uint32_t lk_mode) {
     printf("LK mode for %s\n", soc->name);
 
     if (!lk_path) {
         fprintf(stderr, "LK path required for LK mode\n");
         return -1;
     }
-    if (!dram_size_per_rank || !dram_ranks) {
+    if (!dram_size_per_rank || !dram_ranks || dram_ranks > 4) {
         fprintf(stderr, "DRAM size and ranks required for LK mode\n");
+        return -1;
+    }
+    if (input_count > 1) {
+        fprintf(stderr, "LK mode accepts at most one input\n");
+        return -1;
+    }
+    if (input_count && kernel_path) {
+        fprintf(stderr, "Cannot combine input and kernel in LK mode\n");
         return -1;
     }
 
@@ -166,14 +176,15 @@ int run_lk_mode(serial_t *s, const soc_info_t *soc, const char *payload_path,
         return -1;
     }
     uint32_t ptr_dl, ptr_ul, bldr_jump, da_addr, lk_base;
-    if (analyze_preloader(pl_data, pl_size, soc->dram_base,
+    if (analyze_preloader(pl_data, pl_size,
+                          preloader_addr_hint ? preloader_addr_hint : soc->dram_base,
                           &ptr_dl, &ptr_ul, &bldr_jump, &da_addr, &lk_base) != 0) {
         fprintf(stderr, "Preloader analysis failed\n");
         free(pl_data);
         return -1;
     }
     if (lk_base == 0)
-        lk_base = soc->lk_base_hint;
+        lk_base = lk_addr_hint ? lk_addr_hint : soc->lk_base_hint;
 
     free(pl_data);
 
@@ -184,7 +195,8 @@ int run_lk_mode(serial_t *s, const soc_info_t *soc, const char *payload_path,
         fprintf(stderr, "Failed to read LK\n");
         return -1;
     }
-    if (lk_base == 0) lk_base = soc->lk_base_hint;
+    if (lk_base == 0)
+        lk_base = lk_addr_hint ? lk_addr_hint : soc->lk_base_hint;
 
     uint32_t lk_content_offset, lk_content_size;
     char partition_name[33];
@@ -226,7 +238,12 @@ int run_lk_mode(serial_t *s, const soc_info_t *soc, const char *payload_path,
     payload_params_t params;
     payload_params_init(&params, soc->dram_base, soc->dram_base + 0x40000000,
                         ptr_dl, ptr_ul, SOC_MT6589);
-    inject_params(payload, payload_size, &params);
+    if (inject_params(payload, payload_size, &params) != 0) {
+        fprintf(stderr, "Payload does not contain a parameter marker\n");
+        free(payload);
+        free(lk_data);
+        return -1;
+    }
 
     // DA送信とジャンプ
     printf("Sending payload...\n");
@@ -272,6 +289,8 @@ int run_lk_mode(serial_t *s, const soc_info_t *soc, const char *payload_path,
     uint32_t ramdisk_size = 0;
     const uint32_t boot_arg_addr = soc->boot_arg_addr;
     const uint32_t boot_arg_size = sizeof(boot_arg_t);
+
+    const char *input_path = input_count ? inputs[0].path : NULL;
 
     if (kernel_path) {
         char kernel_mtk_path[128];
@@ -469,7 +488,7 @@ int run_lk_mode(serial_t *s, const soc_info_t *soc, const char *payload_path,
 
     // Boot arg準備とアップロード
     boot_arg_t boot_arg;
-    boot_arg_init(&boot_arg, dram_size_per_rank, dram_ranks);
+    boot_arg_init(&boot_arg, dram_size_per_rank, dram_ranks, lk_mode);
     printf("Uploading boot arg to 0x%x...\n", boot_arg_addr);
     message_init_write(&msg, boot_arg_addr, boot_arg_size);
     protocol_send_message(&proto, &msg);
