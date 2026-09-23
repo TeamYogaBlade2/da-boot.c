@@ -110,18 +110,13 @@ void enter_main(uint32_t entry, uint32_t runtime_base, uint32_t stack_top) {
 __attribute__((noreturn, noinline))
 void payload_bootstrap(uint32_t runtime_base) {
     payload_params_t *params = &g_params;
-    /*
-     * At this point the PIE is executing at runtime_base, so linker-defined
-     * layout symbols evaluate to runtime addresses. Convert them to
-     * image-relative offsets before adding them to runtime_base/active_base.
-     * _stack_top is already a runtime address and must not be rebased again.
-     */
-    uint32_t image_start = (uint32_t)_image_start - runtime_base;
-    uint32_t bss_start = (uint32_t)_bss_start - runtime_base;
-    uint32_t bss_end = (uint32_t)_bss_end - runtime_base;
-    uint32_t rel_start = (uint32_t)_rel_dyn_start - runtime_base;
-    uint32_t rel_end = (uint32_t)_rel_dyn_end - runtime_base;
-    uint32_t bootstrap_stack = (uint32_t)_stack_top;
+    uint32_t image_start = (uint32_t)_image_start;
+    uint32_t bss_start = (uint32_t)_bss_start;
+    uint32_t bss_end = (uint32_t)_bss_end;
+    uint32_t rel_start = (uint32_t)_rel_dyn_start;
+    uint32_t rel_end = (uint32_t)_rel_dyn_end;
+    uint32_t bootstrap_stack =
+        runtime_base + (uint32_t)_stack_top;
     uint32_t raw_size = bss_start - image_start;
     uint32_t image_size = bss_end - image_start;
     uint32_t params_offset =
