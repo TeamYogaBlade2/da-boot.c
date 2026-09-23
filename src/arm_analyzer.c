@@ -927,7 +927,8 @@ static int try_preloader_dl_ul_mode(const uint8_t *data, uint32_t size, uint32_t
                 const cs_arm *arm;
                 int r;
                 reg_value_t array;
-                uint32_t dl, ul;
+        /* The Preloader callback table is laid out as [UL, DL]. */
+        uint32_t ul, dl;
 
                 if (a.insn[i].id != ARM_INS_LDM || !a.insn[i].detail)
                     continue;
@@ -944,9 +945,9 @@ static int try_preloader_dl_ul_mode(const uint8_t *data, uint32_t size, uint32_t
                 if (!value_is_full(array))
                     continue;
 
-                if (read_u32_va(&a, array.value, &dl) != 0 ||
-                    read_u32_va(&a, array.value + 4, &ul) != 0)
-                    continue;
+        if (read_u32_va(&a, array.value, &ul) != 0 ||
+            read_u32_va(&a, array.value + 4, &dl) != 0)
+            continue;
 
                 if (!ptr_in_image(&a, dl, 1) || !ptr_in_image(&a, ul, 1))
                     continue;
