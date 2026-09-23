@@ -5,6 +5,7 @@
 #define GFH_FILE_INFO_MAGIC  0x464C4945  // "FILE"
 #define GFH_ROM_INFO_MAGIC   0x4D4F5220  // "ROM "
 #define GFH_BL_INFO_MAGIC    0x424C2121  // "BL!!"
+#define MTK_LK_PARTITION_HEADER_SIZE 0x200u
 
 // GFHヘッダ構造
 typedef struct __attribute__((packed)) {
@@ -201,16 +202,17 @@ int image_parse_lk(const uint8_t *data, uint32_t size,
                    char *partition_name, uint32_t name_len) {
     // MTKイメージは複数のパーティションを含む
     // 最初のパーティションを抽出
-    if (size < 512) return -1;
-
     // イメージヘッダ
     typedef struct __attribute__((packed)) {
-        char name[32];
         uint32_t magic;
         uint32_t size;
+        char name[32];
     } img_header_t;
 
-    img_header_t *hdr = (img_header_t*)data;
+    if (size < sizeof(img_header_t))
+        return -1;
+
+    const img_header_t *hdr = (const img_header_t *)data;
     if (hdr->magic != 0x58881688) { // MTKイメージマジック
         // 生バイナリとして扱う
         *content_offset = 0;
@@ -219,9 +221,18 @@ int image_parse_lk(const uint8_t *data, uint32_t size,
         return 0;
     }
 
+    if (size < MTK_LK_PARTITION_HEADER_SIZE ||
+        hdr->size > size - MTK_LK_PARTITION_HEADER_SIZE) {
+        fprintf(stderr,
+                "[image] LK partition out of range:"
+                " header_size=0x%x content_size=0x%x file_size=0x%x\n",
+                MTK_LK_PARTITION_HEADER_SIZE, hdr->size, size);
+        return -1;
+    }
+
     // 最初のパーティション
     if (partition_name) snprintf(partition_name, name_len, "%s", hdr->name);
-    *content_offset = sizeof(img_header_t);
+    *content_offset = MTK_LK_PARTITION_HEADER_SIZE;
     *content_size = hdr->size;
     return 0;
 }
