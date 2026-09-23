@@ -18,18 +18,13 @@ int serial_open(const char *port, int baudrate) {
         return -1;
     }
 
+    cfmakeraw(&tty);
+
     cfsetospeed(&tty, baudrate);
     cfsetispeed(&tty, baudrate);
 
     tty.c_cflag |= (CLOCAL | CREAD);
-    tty.c_cflag &= ~PARENB;
-    tty.c_cflag &= ~CSTOPB;
-    tty.c_cflag &= ~CSIZE;
-    tty.c_cflag |= CS8;
     tty.c_cflag &= ~CRTSCTS;
-    tty.c_lflag &= ~(ICANON | ECHO | ECHOE | ISIG);
-    tty.c_iflag &= ~(IXON | IXOFF | IXANY);
-    tty.c_oflag &= ~OPOST;
 
     tty.c_cc[VMIN] = 0;
     tty.c_cc[VTIME] = 10; // 1秒タイムアウト
