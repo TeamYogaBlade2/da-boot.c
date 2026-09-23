@@ -7,6 +7,7 @@
 .equ R_ARM_RELATIVE, 23
 
 start:
+    adr sp, _bootstrap_stack_end
     adr r9, _image_start       @ PIC base register
 
     /*
@@ -19,8 +20,6 @@ start:
     add r1, r1, r9             @ runtime _rel_dyn_start
     ldr r2, [r0, #4]
     add r2, r2, r9             @ runtime _rel_dyn_end
-    ldr r5, [r0, #8]
-    add r5, r5, r9             @ runtime _stack_top
 
 1:
     cmp r1, r2
@@ -42,7 +41,11 @@ start:
     b 1b
 
 3:
-    mov sp, r5
     mov r0, r9                 @ main(uint32_t runtime_base)
-    bl  payload_bootstrap
+    blx payload_bootstrap
     b   .
+
+.align 3
+_bootstrap_stack_start:
+    .space 128
+_bootstrap_stack_end:
