@@ -28,8 +28,12 @@ static int g_has_lk_params = 0;
 static void uart_putc(char c) {
     volatile uint32_t *status = (volatile uint32_t*)(UART0_BASE + 0x14);
     volatile uint32_t *data = (volatile uint32_t*)(UART0_BASE + 0x00);
-    while ((*status & 0x20) == 0);
-    *data = c;
+    for (uint32_t i = 0; i < 100000; i++) {
+        if (*status & 0x20) {
+            *data = c;
+            return;
+        }
+    }
 }
 
 static void uart_print(const char *s) {
@@ -207,8 +211,6 @@ void main(uint32_t runtime_base) {
         while (1);
     }
 
-    uart_print("Payload starting...\n");
-
     // パラメータ検証
     if (g_params.magic != MAGIC_DA) {
         uart_print("Invalid magic\n");
@@ -218,14 +220,6 @@ void main(uint32_t runtime_base) {
     // USB関数ポインタ設定
     usb_init(g_params.ptr_ul, g_params.ptr_dl);
 
-    // ヒープ初期化
-    mem_range_t heap;
-    if (find_unused_range(&g_params, 1024*1024, &heap) != 0) {
-        uart_print("No heap\n");
-        while(1);
-    }
-    bump_init((void*)heap.start, 1024*1024);
-
     // プロトコル初期化
     protocol_t proto;
     protocol_init(&proto, usb_send_wrapper, usb_recv_wrapper);
@@ -233,7 +227,10 @@ void main(uint32_t runtime_base) {
     // ACK送信
     message_t ack;
     ack.type = MSG_ACK;
-    protocol_send_message(&proto, &ack);
+    if (protocol_send_message(&proto, &ack) != 0) {
+        uart_print("Initial ACK failed\n");
+        while(1);
+    }
 
     // 応答待ち
     response_t resp;
@@ -241,6 +238,16 @@ void main(uint32_t runtime_base) {
         uart_print("Handshake failed\n");
         while(1);
     }
+
+    uart_print("Payload starting...\n");
+
+    // ヒープ初期化
+    mem_range_t heap;
+    if (find_unused_range(&g_params, 1024*1024, &heap) != 0) {
+        uart_print("No heap\n");
+        while(1);
+    }
+    bump_init((void*)heap.start, 1024*1024);
 
     uart_print("Ready\n");
 
