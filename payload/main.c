@@ -374,29 +374,43 @@ static void handle_message(protocol_t *proto, message_t *msg) {
     protocol_send_response(proto, &resp);
 }
 
-uint32_t mt_part_generic_read_hook(void *dev, uint64_t src, uint8_t *dst, uint32_t size) {
+/*
+ * MT6589's mt_part_generic_read() is:
+ *
+ *     int mt_part_generic_read(part_dev_t *dev, u64 src,
+ *                              uchar *dst, int size);
+ *
+ * With ARM EABI the 64-bit src is passed in r2/r3 because r1 is already
+ * occupied by dst. The fifth argument, size, is on the stack. Using a
+ * uint64_t parameter here would shift dst/src/size and corrupt the hook.
+ */
+uint32_t mt_part_generic_read_hook(void *dev, uint8_t *dst,
+                                   uint32_t src_lo, uint32_t src_hi,
+                                   uint32_t size) {
+    uint64_t src = ((uint64_t)src_hi << 32) | src_lo;
+
     if (!g_has_lk_params) return 0;
 
     // 元の関数を呼び出す
-    uint32_t (*orig)(void*, uint64_t, uint8_t*, uint32_t) =
+    uint32_t (*orig)(void*, uint8_t*, uint32_t, uint32_t, uint32_t) =
         (void*)interceptor_original(g_lk_params.ptr_mt_part_generic_read);
     if (!orig) orig = (void*)g_lk_params.ptr_mt_part_generic_read;
 
     // mt_part_get_partition を呼び出し
     uint32_t (*get_part)(const char*) = (void*)g_lk_params.ptr_mt_part_get_partition;
     uint32_t *part = (uint32_t*)get_part("BOOTIMG");
-    int offset = 12; // MT6589確認済み
     if (!part) {
         part = (uint32_t*)get_part("boot");
-        offset = 0;
     }
     if (part) {
-        uint64_t addr = ((uint64_t)part[offset/4]) << 9;
+        /* part_t.startblk is the second field on 32-bit MT6589 LK. */
+        uint64_t addr = ((uint64_t)part[1] << 9) + 0x800;
         if (src >= addr) {
             uint64_t delta64 = src - addr;
 
-            if (delta64 <= 0x1000 &&
-                delta64 <= g_lk_params.bootimg_scratch_size) {
+            /* The scratch image mirrors the whole LK read window, not just
+             * the boot-image header. Let kernel/ramdisk reads hit it too. */
+            if (delta64 < g_lk_params.bootimg_scratch_size) {
                 uint32_t delta = (uint32_t)delta64;
 
                 if (size <= g_lk_params.bootimg_scratch_size - delta) {
@@ -408,7 +422,7 @@ uint32_t mt_part_generic_read_hook(void *dev, uint64_t src, uint8_t *dst, uint32
             }
         }
     }
-    return orig(dev, src, dst, size);
+    return orig(dev, dst, src_lo, src_hi, size);
 }
 
 void main(uint32_t runtime_base) {
