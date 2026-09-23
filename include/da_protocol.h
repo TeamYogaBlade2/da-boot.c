@@ -19,6 +19,11 @@ typedef enum {
     MSG_SET_PARAMS
 } msg_type_t;
 
+#define RESP_ACK   'A'
+#define RESP_NACK  'N'
+#define RESP_RANGE 'R'
+#define RESP_DATA  'D'
+
 // フックID
 typedef enum {
     HOOK_MT_PART_GENERIC_READ = 0
