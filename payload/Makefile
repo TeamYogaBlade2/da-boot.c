@@ -20,7 +20,10 @@ LDFLAGS = --target=$(TARGET_TRIPLE) \
           -fuse-ld=lld \
           -Tlinker.ld \
           -nostdlib \
-          -Wl,--gc-sections
+          -Wl,--gc-sections \
+          -Wl,-pie \
+          -Wl,-Bstatic \
+          -Wl,--no-dynamic-linker
 
 SRCS = main.c usb.c protocol.c interceptor.c bump_alloc.c cache.c libc_min.c params.c start.S
 
