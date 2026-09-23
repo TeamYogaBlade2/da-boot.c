@@ -1407,6 +1407,82 @@ int extract_get_part(const uint8_t *data, uint32_t size, uint32_t base, uint32_t
     return try_function_by_string_mode(data, size, base, 0, "get_part", addr);
 }
 
+/*
+ * mt_part_register_device() normally gets the default read callback through
+ * an indirect table load such as:
+ *
+ *     ldr   r2, [literal]
+ *     add   r3, pc
+ *     ldr   r3, [r3, r2]
+ *     str   r3, [r4, #0x10]
+ *
+ * The generic register resolver can mistake the incoming value of r3 for
+ * the callback itself because the callback is loaded from a table rather
+ * than from MOVW/MOVT immediates. Resolve that short, local pattern
+ * explicitly and read the callback value from the image.
+ */
+static int resolve_indexed_ldr_value(const arm_analysis_t *a, size_t begin,
+                                     size_t at, int dst_reg, uint32_t *value)
+{
+    size_t first;
+
+    if (at <= begin)
+        return -1;
+
+    first = at > 12 ? at - 12 : begin;
+    if (first < begin)
+        first = begin;
+
+    for (size_t i = at; i > first; i--) {
+        size_t idx = i - 1;
+        const cs_insn *insn = &a->insn[idx];
+        const cs_arm *arm;
+        int base_reg;
+        reg_value_t base;
+        uint32_t address;
+
+        if (insn->id != ARM_INS_LDR || !insn->detail)
+            continue;
+
+        arm = &insn->detail->arm;
+        if (arm->op_count < 2 ||
+            arm->operands[0].type != ARM_OP_REG ||
+            reg_index(arm->operands[0].reg) != dst_reg ||
+            arm->operands[1].type != ARM_OP_MEM)
+            continue;
+
+        base_reg = reg_index(arm->operands[1].mem.base);
+        if (base_reg < 0)
+            continue;
+
+        base = resolve_reg_before(a, begin, idx, base_reg, 0);
+        if (!value_is_full(base))
+            continue;
+
+        address = base.value + (int32_t)arm->operands[1].mem.disp;
+
+        if (arm->operands[1].mem.index != ARM_REG_INVALID) {
+            int index_reg =
+                reg_index(arm->operands[1].mem.index);
+            reg_value_t index;
+
+            if (index_reg < 0)
+                continue;
+
+            index = resolve_reg_before(a, begin, idx, index_reg, 0);
+            if (!value_is_full(index))
+                continue;
+
+            address += index.value;
+        }
+
+        if (read_u32_va(a, address, value) == 0)
+            return 0;
+    }
+
+    return -1;
+}
+
 static int try_mt_part_generic_read_mode(const uint8_t *data, uint32_t size, uint32_t base,
                                          int thumb, uint32_t *addr)
 {
@@ -1471,6 +1547,33 @@ static int try_mt_part_generic_read_mode(const uint8_t *data, uint32_t size, uin
                          * the backwards walk to block_begin here.
                          */
                         value = resolve_reg_before(&a, begin, j, src, 0);
+
+                        /*
+                         * The default read callback in some MT6589 LK builds
+                         * is loaded from an indexed function-pointer table.
+                         * Prefer that exact value over a bogus data-flow
+                         * result such as the table's address itself.
+                         */
+                        {
+                            int valid = value_is_full(value) &&
+                                        value.value != 0 &&
+                                        (value.value & 1) &&
+                                        ptr_in_image(&a, value.value, 1);
+
+                            if (!valid) {
+                                uint32_t callback;
+
+                                if (resolve_indexed_ldr_value(
+                                        &a, begin, j, src, &callback) == 0) {
+                                    value = reg_full(callback);
+                                    fprintf(stderr,
+                                            "[analyzer] mt_part_generic_read:"
+                                            " resolved dev->read callback=0x%08x\n",
+                                            callback);
+                                }
+                            }
+                        }
+
                         if (!value_is_full(value))
                             continue;
                         /*
