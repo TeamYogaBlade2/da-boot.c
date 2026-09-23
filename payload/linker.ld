@@ -9,14 +9,13 @@ SECTIONS
 
     .text.start : {
         KEEP(*(.text.start))
-    }
 
-    /*
-     * Values here are link-time offsets from _image_start.
-     * Keep this section next to the ARM entry point so start.S can find it
-     * with a PC-relative ADR without requiring an absolute relocation.
-     */
-    .runtime_info : ALIGN(4) {
+        /*
+         * Values here are link-time offsets from _image_start.
+         * Keep the metadata inside .text.start so it is part of the
+         * raw payload emitted by llvm-objcopy.
+         */
+        . = ALIGN(4);
         _runtime_info_start = .;
         LONG(_rel_dyn_start - _image_start)
         LONG(_rel_dyn_end - _image_start)
