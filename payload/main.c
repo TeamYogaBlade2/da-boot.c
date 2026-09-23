@@ -189,10 +189,23 @@ uint32_t mt_part_generic_read_hook(void *dev, uint64_t src, uint8_t *dst, uint32
     return orig(dev, src, dst, size);
 }
 
-void main(void) {
+void main(uint32_t runtime_base) {
     // BSS初期化
-    extern uint32_t _bss_start, _bss_end;
-    memset(&_bss_start, 0, &_bss_end - &_bss_start);
+    extern uint8_t _bss_start[], _bss_end[], _stack_top[];
+    uint32_t bss_start = (uint32_t)_bss_start;
+    uint32_t bss_end = (uint32_t)_bss_end;
+    uint32_t stack_top = runtime_base + (uint32_t)_stack_top;
+    memset((void *)(runtime_base + bss_start), 0, bss_end - bss_start);
+
+    /*
+     * The payload image and its bootstrap stack occupy the DA execution
+     * address.  Keep the allocator/download path from returning that range,
+     * otherwise an upload can overwrite the running payload.
+     */
+    if (blacklist_dl(&g_params, runtime_base, stack_top) != 0) {
+        uart_print("Failed to reserve payload memory\n");
+        while (1);
+    }
 
     uart_print("Payload starting...\n");
 
