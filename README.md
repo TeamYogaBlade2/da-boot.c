@@ -23,18 +23,12 @@ BootROM mode is not currently implemented by this C version.
 
 You need:
 
-* clang or GCC
+* clang
 * Capstone development files
 * `make`
 * a MediaTek device supported by the project
 * a Preloader matching the exact target device
 * the helper payload built from `payload/`
-
-On Debian/Ubuntu:
-
-```sh
-sudo apt install clang libcapstone-dev make
-```
 
 On Arch Linux:
 
@@ -81,6 +75,17 @@ repl
 
 The Preloader must belong to the exact device being tested. Do not use a
 Preloader from another device just because it uses the same MediaTek SoC.
+
+Example:
+
+```
+unpack_bootimg --boot_img twrp.img
+
+dd if=kernel of=kernel.zImage bs=512 skip=1
+dd if=ramdisk of=ramdisk.cpio.gz bs=512 skip=1
+
+./da-boot --preloader ../../b8000/stock_rom/4.4/preloader_blade10_row_wifi.bin --lk ../../b8000/stock_rom/4.4/lk.bin --dram-size-per-rank 0x20000000 --dram-ranks 2 --kernel ../twrp/out/kernel.zImage --ramdisk ../twrp/out/ramdisk.cpio.gz lk
+```
 
 ## Common options
 
