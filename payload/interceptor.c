@@ -94,8 +94,14 @@ static int create_trampoline(uint32_t target, uint32_t *trampoline_out,
         tramp_offset += 2;
     }
 
-    // 命令をコピー（最大8バイト）
-    while (offset < 8) {
+    /*
+     * The hook stub occupies 8 bytes for a 4-byte-aligned target, but
+     * requires a leading NOP for an unaligned Thumb target.  In that
+     * case the overwritten region is 10 bytes, so the trampoline must
+     * preserve at least that much original code.
+     */
+    uint32_t patch_size = (target_aligned % 4 != 0) ? 10 : 8;
+    while (offset < patch_size) {
         uint16_t hw1 = *(uint16_t*)(orig + offset);
         if (is_32bit_instr(hw1)) {
             uint16_t hw2 = *(uint16_t*)(orig + offset + 2);
