@@ -9,7 +9,34 @@ typedef struct __attribute__((packed)) {
 } wire_msg_t;
 
 void protocol_init(protocol_t *p, serial_t *io) {
+	memset(p, 0, sizeof(*p));
     p->io = io;
+}
+
+static void protocol_flush_payload_log(protocol_t *p) {
+	if (!p->payload_log_len) return;
+	fputs("[payload] ", stdout);
+	fwrite(p->payload_log_line, 1, p->payload_log_len, stdout);
+	fputc('\n', stdout);
+	fflush(stdout);
+	p->payload_log_len = 0;
+}
+
+static void protocol_append_payload_log(protocol_t *p,
+						const uint8_t *data, uint32_t len) {
+	for (uint32_t i = 0; i < len; i++) {
+		uint8_t ch = data[i];
+
+		if (ch == '\r') continue;
+		if (ch == '\n') {
+			protocol_flush_payload_log(p);
+			continue;
+		}
+
+		if (p->payload_log_len == sizeof(p->payload_log_line))
+			protocol_flush_payload_log(p);
+		p->payload_log_line[p->payload_log_len++] = ch;
+	}
 }
 
 int protocol_send_message(protocol_t *p, const message_t *msg) {
@@ -152,29 +179,42 @@ int protocol_send_response(protocol_t *p, const response_t *resp) {
 int protocol_read_response(protocol_t *p, response_t *resp) {
     for (;;) {
         uint8_t size_buf[4];
-        if (serial_read(p->io, size_buf, 4, 5000) != 0) return -1;
+        if (serial_read(p->io, size_buf, 4, 5000) != 0) {
+            protocol_flush_payload_log(p);
+            return -1;
+        }
         uint32_t size = (size_buf[0] << 24) | (size_buf[1] << 16) |
                         (size_buf[2] << 8) | size_buf[3];
-        if (size == 0 || size > sizeof(p->buf)) return -1;
-        if (serial_read(p->io, p->buf, size, 5000) != 0) return -1;
+        if (size == 0 || size > sizeof(p->buf)) {
+            protocol_flush_payload_log(p);
+            return -1;
+        }
+        if (serial_read(p->io, p->buf, size, 5000) != 0) {
+            protocol_flush_payload_log(p);
+            return -1;
+        }
 
         uint32_t off = 0;
         resp->type = p->buf[off++];
         if (resp->type == RESP_LOG) {
-            if (size > 1) {
-                fputs("[payload] ", stdout);
-                fwrite(&p->buf[1], 1, size - 1, stdout);
-                fflush(stdout);
-            }
+            if (size > 1)
+                protocol_append_payload_log(p, &p->buf[1], size - 1);
             continue;
         }
         if (resp->type == 'N') {
-            if (size < 2) return -1;
+            if (size < 2) {
+                protocol_flush_payload_log(p);
+                return -1;
+            }
             resp->err = p->buf[off++];
         } else if (resp->type == 'R') {
-            if (size < 5) return -1;
+            if (size < 5) {
+                protocol_flush_payload_log(p);
+                return -1;
+            }
             memcpy(&resp->addr, &p->buf[off], 4); off += 4;
         }
+        protocol_flush_payload_log(p);
         return 0;
     }
 }

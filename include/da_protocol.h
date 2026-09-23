@@ -79,6 +79,8 @@ typedef struct {
 typedef struct {
     serial_t *io;
     uint8_t buf[512];
+    uint8_t payload_log_line[512];
+    uint32_t payload_log_len;
 } protocol_t;
 
 // 初期化

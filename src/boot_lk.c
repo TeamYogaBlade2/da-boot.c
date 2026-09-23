@@ -608,7 +608,7 @@ int run_lk_mode(serial_t *s, const soc_info_t *soc, const char *payload_path,
         return -1;
     }
     if (protocol_read_response(&proto, &resp) != 0) {
-        fprintf(stderr, "Timed out waiting for mt_part_generic_read hook response\n");
+        fprintf(stderr, "No valid response from payload after mt_part_generic_read hook request\n");
         free(payload);
         return -1;
     }
