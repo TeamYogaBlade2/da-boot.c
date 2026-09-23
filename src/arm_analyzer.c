@@ -24,6 +24,8 @@ typedef struct {
     const uint8_t *data;
 } arm_analysis_t;
 
+static int destination_reg(const cs_insn *insn);
+
 static reg_value_t reg_unknown(void)
 {
     reg_value_t v = { 0, 0 };
@@ -138,6 +140,9 @@ static reg_value_t resolve_reg_before(const arm_analysis_t *a, size_t begin, siz
 
 static reg_value_t resolve_movw_movt(const arm_analysis_t *a, size_t begin,
                                      size_t idx, int reg, int want_high, unsigned depth);
+
+static reg_value_t resolve_definition(const arm_analysis_t *a, size_t begin, size_t idx,
+                                      int reg, unsigned depth);
 
 static int resolve_operand_value(const arm_analysis_t *a, size_t begin, size_t at,
                                  const cs_arm_op *op, uint32_t *value)
@@ -256,26 +261,28 @@ static int instruction_refers_to(const arm_analysis_t *a, const cs_insn *insn,
     }
 
     /*
-     * ARM/Thumb compilers commonly materialize a full address with:
+     * Use the same backward value resolver used for the DL/UL table.
+     * This covers MOVW/MOVT as well as compiler-generated combinations
+     * such as:
      *
-     *     movw rN, #lo16
-     *     movt rN, #hi16
+     *     mov r3, pc
+     *     add r3, #imm
      *
-     * Capstone exposes these as two separate instructions, so this cannot
-     * be recognized by the PC-relative cases above.
+     * or:
+     *
+     *     movw r3, #lo
+     *     movt r3, #hi
+     *     add  r3, #delta
      */
-    if (insn->id == ARM_INS_MOVT &&
-        arm->op_count >= 2 &&
-        arm->operands[0].type == ARM_OP_REG &&
-        arm->operands[1].type == ARM_OP_IMM) {
-        int dst = reg_index(arm->operands[0].reg);
+    {
         size_t at = (size_t)(insn - a->insn);
+        int dst = destination_reg(insn);
 
         if (dst >= 0) {
-            reg_value_t value =
-                resolve_movw_movt(a, 0, at, dst, 1, 0);
+            reg_value_t resolved =
+                resolve_definition(a, 0, at, dst, 0);
 
-            if (value_is_full(value) && value.value == target_va)
+            if (value_is_full(resolved) && resolved.value == target_va)
                 return 1;
         }
     }
@@ -291,6 +298,22 @@ static const uint8_t *find_string(const uint8_t *data, uint32_t size, const char
         return NULL;
 
     for (uint32_t i = 0; i + str_len <= size; i++) {
+        if (memcmp(data + i, str, str_len) == 0)
+            return data + i;
+    }
+
+    return NULL;
+}
+
+static const uint8_t *find_string_from(const uint8_t *data, uint32_t size,
+                                       const char *str, uint32_t start)
+{
+    uint32_t str_len = (uint32_t)strlen(str);
+
+    if (!str_len || str_len > size || start > size - str_len)
+        return NULL;
+
+    for (uint32_t i = start; i + str_len <= size; i++) {
         if (memcmp(data + i, str, str_len) == 0)
             return data + i;
     }
@@ -523,6 +546,9 @@ static reg_value_t resolve_definition(const arm_analysis_t *a, size_t begin, siz
     case ARM_INS_MOV:
         if (arm->operands[1].type == ARM_OP_IMM)
             return reg_full((uint32_t)arm->operands[1].imm);
+        if (arm->operands[1].type == ARM_OP_REG &&
+            arm->operands[1].reg == ARM_REG_PC)
+            return reg_full(arm_pc(a, insn));
         if (arm->operands[1].type == ARM_OP_REG) {
             int src = reg_index(arm->operands[1].reg);
             if (src >= 0)
@@ -585,19 +611,50 @@ static reg_value_t resolve_definition(const arm_analysis_t *a, size_t begin, siz
                                    : left.value - right.value);
         }
 
+        if (arm->op_count == 2 &&
+            arm->operands[1].type == ARM_OP_IMM) {
+            left = resolve_reg_before(a, begin, idx, dst, depth + 1);
+            if (!value_is_full(left))
+                break;
+
+            return reg_full(is_add
+                                ? left.value + (uint32_t)arm->operands[1].imm
+                                : left.value - (uint32_t)arm->operands[1].imm);
+        }
+
         if (arm->op_count < 3)
             break;
 
-        if (arm->operands[1].type == ARM_OP_REG &&
-            arm->operands[1].reg == ARM_REG_PC) {
-            left = reg_full(arm_pc(a, insn));
+        if (arm->operands[1].type != ARM_OP_REG)
+            break;
 
-            if (resolve_operand_value(a, begin, idx, &arm->operands[2],
-                                      &right.value) != 0)
+        if (arm->operands[1].reg == ARM_REG_PC)
+            left = reg_full(arm_pc(a, insn));
+        else {
+            src = reg_index(arm->operands[1].reg);
+            if (src < 0)
                 break;
-            right.mask = 3;
-            return reg_full(is_add ? left.value + right.value
-                                   : left.value - right.value);
+            left = resolve_reg_before(a, begin, idx, src, depth + 1);
+            if (!value_is_full(left))
+                break;
+        }
+
+        if (arm->operands[2].type == ARM_OP_IMM)
+            return reg_full(is_add
+                                ? left.value + (uint32_t)arm->operands[2].imm
+                                : left.value - (uint32_t)arm->operands[2].imm);
+
+        if (arm->operands[2].type == ARM_OP_REG) {
+            src = reg_index(arm->operands[2].reg);
+            if (src < 0)
+                break;
+            right = resolve_reg_before(a, begin, idx, src, depth + 1);
+            if (!value_is_full(right))
+                break;
+
+            return reg_full(is_add
+                                ? left.value + right.value
+                                : left.value - right.value);
         }
 
         break;
@@ -793,99 +850,107 @@ static int try_preloader_dl_ul_mode(const uint8_t *data, uint32_t size, uint32_t
                                     int thumb, uint32_t *ptr_dl, uint32_t *ptr_ul)
 {
     const char *pat = "%s sync time %dms\n";
-    const uint8_t *found = find_string(data, size, pat);
     arm_analysis_t a;
     size_t refs = 0;
+    uint32_t search_off = 0;
+    uint32_t str_len = (uint32_t)strlen(pat);
 
-    if (!found) {
+    if (!str_len || str_len > size) {
         fprintf(stderr, "[analyzer] ptr_dl/ptr_ul: string not found: %s\n", pat);
         return -1;
     }
 
-    fprintf(stderr, "[analyzer] ptr_dl/ptr_ul: found string at +0x%x, mode=%s\n",
-            (unsigned)(found - data), thumb ? "Thumb" : "ARM");
-
     if (open_analysis(&a, data, size, base, thumb) != 0)
         return -1;
 
-    uint32_t str_va = base + (uint32_t)(found - data);
-
     /*
-     * The upstream analyzer does not use the first string reference.
-     * Multiple blocks may reference the same format string, and the
-     * relevant block is the one containing the LDM which loads the
-     * {ptr_dl, ptr_ul} pair.
+     * Do not assume the first occurrence is the referenced string.
+     * Real preloaders may contain multiple identical copies of a format
+     * string.  Upstream blocks_by_str() effectively searches all matching
+     * string anchors.
      */
-    for (size_t ref_idx = 0; ref_idx < a.count; ref_idx++) {
-        size_t begin, end;
+    while (search_off <= size - str_len) {
+        const uint8_t *found =
+            find_string_from(data, size, pat, search_off);
+        size_t next_search;
+        uint32_t str_va;
 
-        if (!instruction_refers_to(&a, &a.insn[ref_idx], str_va))
-            continue;
+        if (!found)
+            break;
 
-        refs++;
-        if (find_function_range(&a, ref_idx, &begin, &end) != 0)
-            continue;
+        next_search = (size_t)(found - data);
+        search_off = (uint32_t)next_search + 1;
+        str_va = base + (uint32_t)next_search;
 
         fprintf(stderr,
-                "[analyzer] ptr_dl/ptr_ul: xref=0x%08x function=[0x%08x,0x%08x) (%s)\n",
-                (uint32_t)a.insn[ref_idx].address,
-                (uint32_t)a.insn[begin].address,
-                end < a.count ? (uint32_t)a.insn[end].address
-                              : (uint32_t)(a.insn[a.count - 1].address +
-                                           a.insn[a.count - 1].size),
-                thumb ? "Thumb" : "ARM");
+                "[analyzer] ptr_dl/ptr_ul: found string at +0x%x, mode=%s\n",
+                (unsigned)next_search, thumb ? "Thumb" : "ARM");
 
-        for (size_t i = begin; i < end; i++) {
-            const cs_arm *arm;
-            int r;
-            reg_value_t array;
-            uint32_t dl, ul;
+        for (size_t ref_idx = 0; ref_idx < a.count; ref_idx++) {
+            size_t begin, end;
 
-            if (a.insn[i].id != ARM_INS_LDM || !a.insn[i].detail)
+            if (!instruction_refers_to(&a, &a.insn[ref_idx], str_va))
                 continue;
 
-            arm = &a.insn[i].detail->arm;
-            if (!arm->op_count || arm->operands[0].type != ARM_OP_REG)
+            refs++;
+            if (find_function_range(&a, ref_idx, &begin, &end) != 0)
                 continue;
 
-            r = reg_index(arm->operands[0].reg);
-            if (r < 0)
-                continue;
-
-            array = resolve_reg_before(&a, begin, i, r, 0);
-            if (!value_is_full(array))
-                continue;
-
-            if (read_u32_va(&a, array.value, &dl) != 0 ||
-                read_u32_va(&a, array.value + 4, &ul) != 0)
-                continue;
-
-            if (!ptr_in_image(&a, dl, 1) || !ptr_in_image(&a, ul, 1))
-                continue;
-
-            if (!(dl & 1) || !(ul & 1))
-                continue;
-
-            *ptr_dl = dl;
-            *ptr_ul = ul;
             fprintf(stderr,
-                    "[analyzer] ptr_dl/ptr_ul: success dl=0x%08x ul=0x%08x (%s)\n",
-                    dl, ul, thumb ? "Thumb" : "ARM");
-            close_analysis(&a);
-            return 0;
+                    "[analyzer] ptr_dl/ptr_ul: xref=0x%08x function=[0x%08x,0x%08x) (%s)\n",
+                    (uint32_t)a.insn[ref_idx].address,
+                    (uint32_t)a.insn[begin].address,
+                    end < a.count ? (uint32_t)a.insn[end].address
+                                  : (uint32_t)(a.insn[a.count - 1].address +
+                                               a.insn[a.count - 1].size),
+                    thumb ? "Thumb" : "ARM");
+
+            for (size_t i = begin; i < end; i++) {
+                const cs_arm *arm;
+                int r;
+                reg_value_t array;
+                uint32_t dl, ul;
+
+                if (a.insn[i].id != ARM_INS_LDM || !a.insn[i].detail)
+                    continue;
+
+                arm = &a.insn[i].detail->arm;
+                if (!arm->op_count || arm->operands[0].type != ARM_OP_REG)
+                    continue;
+
+                r = reg_index(arm->operands[0].reg);
+                if (r < 0)
+                    continue;
+
+                array = resolve_reg_before(&a, begin, i, r, 0);
+                if (!value_is_full(array))
+                    continue;
+
+                if (read_u32_va(&a, array.value, &dl) != 0 ||
+                    read_u32_va(&a, array.value + 4, &ul) != 0)
+                    continue;
+
+                if (!ptr_in_image(&a, dl, 1) || !ptr_in_image(&a, ul, 1))
+                    continue;
+
+                if (!(dl & 1) || !(ul & 1))
+                    continue;
+
+                *ptr_dl = dl;
+                *ptr_ul = ul;
+                fprintf(stderr,
+                        "[analyzer] ptr_dl/ptr_ul: success dl=0x%08x ul=0x%08x (%s)\n",
+                        dl, ul, thumb ? "Thumb" : "ARM");
+                close_analysis(&a);
+                return 0;
+            }
         }
     }
 
-    if (!refs)
-        fprintf(stderr,
-                "[analyzer] ptr_dl/ptr_ul: no code reference to string VA 0x%08x (%s mode)\n",
-                str_va, thumb ? "Thumb" : "ARM");
-    else
-        fprintf(stderr,
-                "[analyzer] ptr_dl/ptr_ul: no valid LDM-backed DL/UL pair"
-                " after %zu string references (%s mode)\n",
-                refs, thumb ? "Thumb" : "ARM");
-
+    fprintf(stderr,
+            "[analyzer] ptr_dl/ptr_ul: no valid LDM-backed DL/UL pair"
+            " after %zu string references (%s mode)\n",
+            refs, thumb ? "Thumb" : "ARM");
     close_analysis(&a);
     return -1;
 }
