@@ -62,6 +62,160 @@ static int usb_recv_wrapper(uint8_t *buf, uint32_t len, uint32_t timeout) {
 // LKフック関数
 uint32_t mt_part_generic_read_hook(void *dev, uint64_t src, uint8_t *dst, uint32_t size);
 
+typedef struct {
+    uint32_t r_offset;
+    uint32_t r_info;
+} elf32_rel_t;
+
+#define R_ARM_RELATIVE 23u
+
+extern uint8_t _image_start[];
+extern uint8_t _rel_dyn_start[];
+extern uint8_t _rel_dyn_end[];
+extern uint8_t _bss_start[];
+extern uint8_t _bss_end[];
+extern uint8_t _stack_top[];
+
+void main(uint32_t runtime_base);
+
+/*
+ * Switch to the final stack and branch to the relocated main().
+ *
+ * This is deliberately a tail branch: the old DA_ADDR stack must not remain
+ * active after the relocation bootstrap has finished.
+ */
+static __attribute__((noreturn, noinline))
+void enter_main(uint32_t entry, uint32_t runtime_base, uint32_t stack_top) {
+    asm volatile(
+        "mov sp, %[stack]\n"
+        "mov r0, %[base]\n"
+        "bx  %[entry]\n"
+        :
+        : [stack] "r" (stack_top),
+          [base]  "r" (runtime_base),
+          [entry] "r" (entry)
+        : "r0", "memory");
+
+    __builtin_unreachable();
+}
+
+/*
+ * The DA is initially downloaded to DA_ADDR.  The upstream implementation
+ * relocates the PIE away from that staging area before entering the main
+ * payload, and uses a separate stack range.  The startup code has already
+ * applied the R_ARM_RELATIVE relocations to the original image, so when the
+ * image is copied we adjust those already-relocated pointers by the
+ * source->destination delta.
+ */
+__attribute__((noreturn, noinline))
+void payload_bootstrap(uint32_t runtime_base) {
+    payload_params_t *params = &g_params;
+    uint32_t image_start = (uint32_t)_image_start;
+    uint32_t bss_start = (uint32_t)_bss_start;
+    uint32_t bss_end = (uint32_t)_bss_end;
+    uint32_t rel_start = (uint32_t)_rel_dyn_start;
+    uint32_t rel_end = (uint32_t)_rel_dyn_end;
+    uint32_t bootstrap_stack =
+        runtime_base + (uint32_t)_stack_top;
+    uint32_t raw_size = bss_start - image_start;
+    uint32_t image_size = bss_end - image_start;
+    uint32_t params_offset =
+        (uint32_t)(uintptr_t)&g_params - runtime_base;
+    uint32_t main_offset =
+        (uint32_t)(uintptr_t)main - runtime_base;
+
+    if (params->magic != MAGIC_DA || params->version != CURRENT_VERSION) {
+        uart_print("Invalid payload parameters\n");
+        while (1);
+    }
+
+    /*
+     * Reserve the original DA image and its temporary bootstrap stack.
+     * This prevents find_unused_range() from selecting memory which is still
+     * needed while the relocation copy is being made.
+     */
+    if (blacklist_dl(params, runtime_base, bootstrap_stack) != 0) {
+        uart_print("Failed to reserve bootstrap image\n");
+        while (1);
+    }
+
+    mem_range_t reloc_range;
+    if (find_unused_range(params, image_size, &reloc_range) != 0) {
+        uart_print("Failed to find relocation range\n");
+        while (1);
+    }
+
+    uint32_t active_base = reloc_range.start;
+
+    /*
+     * The original image has already had its GOT/RELATIVE relocations fixed
+     * up for runtime_base.  Copy only the file-backed part, then move every
+     * R_ARM_RELATIVE result by the destination delta.
+     */
+    memcpy((void *)active_base, (const void *)runtime_base, raw_size);
+
+    uint32_t delta = active_base - runtime_base;
+    elf32_rel_t *rel =
+        (elf32_rel_t *)(runtime_base + rel_start);
+    elf32_rel_t *rel_limit =
+        (elf32_rel_t *)(runtime_base + rel_end);
+
+    for (; rel < rel_limit; rel++) {
+        if ((rel->r_info & 0xffu) == R_ARM_RELATIVE) {
+            uint32_t *target =
+                (uint32_t *)(active_base + rel->r_offset);
+            *target += delta;
+        }
+    }
+
+    /*
+     * .bss is not file-backed by payload.bin, so explicitly create it in the
+     * relocated image before entering C.
+     */
+    memset((void *)(active_base + bss_start),
+           0, bss_end - bss_start);
+
+    payload_params_t *active_params =
+        (payload_params_t *)(active_base + params_offset);
+
+    /*
+     * Keep the running image out of subsequent host downloads.  The original
+     * DA_ADDR range stays reserved in active_params because its bootstrap
+     * range was copied together with the parameter block.
+     */
+    if (blacklist_dl(active_params,
+                     active_base,
+                     active_base + image_size) != 0) {
+        uart_print("Failed to reserve relocated image\n");
+        while (1);
+    }
+
+    mem_range_t stack_range;
+    if (find_unused_range(active_params, 4096, &stack_range) != 0) {
+        uart_print("Failed to find payload stack\n");
+        while (1);
+    }
+
+    if (blacklist_dl(active_params,
+                     stack_range.start,
+                     stack_range.end) != 0) {
+        uart_print("Failed to reserve payload stack\n");
+        while (1);
+    }
+
+    flush_dcache(active_base, image_size);
+    flush_icache();
+
+    /*
+     * main() is Thumb code.  Preserve its Thumb bit when deriving its
+     * relocated address from the runtime address used above.
+     */
+    uint32_t main_addr = active_base + main_offset;
+    uint32_t stack_top = stack_range.end & ~7u;
+
+    enter_main(main_addr, active_base, stack_top);
+}
+
 static void handle_message(protocol_t *proto, message_t *msg) {
     response_t resp;
     resp.type = RESP_ACK;
@@ -194,22 +348,7 @@ uint32_t mt_part_generic_read_hook(void *dev, uint64_t src, uint8_t *dst, uint32
 }
 
 void main(uint32_t runtime_base) {
-    // BSS初期化
-    extern uint8_t _bss_start[], _bss_end[], _stack_top[];
-    uint32_t bss_start = (uint32_t)_bss_start;
-    uint32_t bss_end = (uint32_t)_bss_end;
-    uint32_t stack_top = runtime_base + (uint32_t)_stack_top;
-    memset((void *)(runtime_base + bss_start), 0, bss_end - bss_start);
-
-    /*
-     * The payload image and its bootstrap stack occupy the DA execution
-     * address.  Keep the allocator/download path from returning that range,
-     * otherwise an upload can overwrite the running payload.
-     */
-    if (blacklist_dl(&g_params, runtime_base, stack_top) != 0) {
-        uart_print("Failed to reserve payload memory\n");
-        while (1);
-    }
+    (void)runtime_base;
 
     // パラメータ検証
     if (g_params.magic != MAGIC_DA) {

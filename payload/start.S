@@ -44,5 +44,5 @@ start:
 3:
     mov sp, r5
     mov r0, r9                 @ main(uint32_t runtime_base)
-    bl  main
+    bl  payload_bootstrap
     b   .
