@@ -21,6 +21,7 @@
 #define RESP_NACK  'N'
 #define RESP_RANGE 'R'
 #define RESP_DATA  'D'
+#define RESP_LOG   'L'
 
 // エラーコード
 #define PROTO_ERR_NOT_SUPPORTED      1

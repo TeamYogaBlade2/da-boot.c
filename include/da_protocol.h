@@ -23,6 +23,7 @@ typedef enum {
 #define RESP_NACK  'N'
 #define RESP_RANGE 'R'
 #define RESP_DATA  'D'
+#define RESP_LOG   'L'
 
 // フックID
 typedef enum {

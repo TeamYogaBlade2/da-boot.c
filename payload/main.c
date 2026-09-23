@@ -22,6 +22,7 @@ static uint32_t g_usb_recv_fn;
 // グローバル状態
 static preloader_runner_params_t g_preloader_params;
 static lk_runner_params_t g_lk_params;
+static int g_usb_log_ready = 0;
 static int g_has_preloader_params = 0;
 static int g_has_lk_params = 0;
 
@@ -36,8 +37,28 @@ static void uart_putc(char c) {
     }
 }
 
+static void usb_log_bytes(const uint8_t *data, uint32_t len) {
+    uint8_t frame[1 + 240];
+
+    while (len) {
+        uint32_t chunk = len > 240 ? 240 : len;
+        uint32_t frame_size = __builtin_bswap32(chunk + 1);
+
+        frame[0] = RESP_LOG;
+        memcpy(&frame[1], data, chunk);
+        usb_send((const uint8_t *)&frame_size, sizeof(frame_size));
+        usb_send(frame, chunk + 1);
+
+        data += chunk;
+        len -= chunk;
+    }
+}
+
 static void uart_print(const char *s) {
+    const char *start = s;
     while (*s) uart_putc(*s++);
+    if (g_usb_log_ready && s != start)
+        usb_log_bytes((const uint8_t *)start, (uint32_t)(s - start));
 }
 
 static void uart_print_hex(uint32_t v) {
@@ -321,10 +342,15 @@ static void handle_message(protocol_t *proto, message_t *msg) {
         }
         case MSG_HOOK:
             if (msg->hook == HOOK_MT_PART_GENERIC_READ && g_has_lk_params) {
+                uart_print("Installing mt_part_generic_read hook at 0x");
+                uart_print_hex(g_lk_params.ptr_mt_part_generic_read | 1u);
+                uart_print("\n");
                 if (interceptor_replace(g_lk_params.ptr_mt_part_generic_read | 1,
                                          (void*)mt_part_generic_read_hook) == 0) {
+                    uart_print("mt_part_generic_read hook installed\n");
                     resp.type = RESP_ACK;
                 } else {
+                    uart_print("mt_part_generic_read hook failed\n");
                     resp.type = RESP_NACK;
                     resp.err = PROTO_ERR_NOT_SUPPORTED;
                 }
@@ -456,6 +482,7 @@ void main(uint32_t runtime_base) {
         uart_print("Handshake failed\n");
         while(1);
     }
+    g_usb_log_ready = 1;
 
     uart_print("Payload starting...\n");
 
