@@ -84,6 +84,19 @@ static int write_mtk_image(const char *path, const char *name,
     return 0;
 }
 
+static int create_temp_path(char *path) {
+    int fd;
+
+    fd = mkstemp(path);
+    if (fd < 0)
+        return -1;
+    if (close(fd) != 0) {
+        unlink(path);
+        return -1;
+    }
+    return 0;
+}
+
 static int wrap_file_as_mtk_image(const char *input_path,
                                   const char *output_path,
                                   const char *name, uint32_t *data_size) {
@@ -407,15 +420,24 @@ int run_lk_mode(serial_t *s, const soc_info_t *soc, const char *payload_path,
     const char *input_path = input_count ? inputs[0].path : NULL;
 
     if (kernel_path) {
-        char kernel_mtk_path[128];
-        char ramdisk_mtk_path[128];
+        char kernel_mtk_path[] = "/tmp/da-boot-kernel-XXXXXX";
+        char ramdisk_mtk_path[] = "/tmp/da-boot-rootfs-XXXXXX";
+        char bootimg_path[] = "/tmp/da-boot-output-XXXXXX";
         char cmd[1024];
-        long pid = (long)getpid();
 
-        snprintf(kernel_mtk_path, sizeof(kernel_mtk_path),
-                 "/tmp/da-boot-%ld-kernel.img", pid);
-        snprintf(ramdisk_mtk_path, sizeof(ramdisk_mtk_path),
-                 "/tmp/da-boot-%ld-rootfs.img", pid);
+        if (create_temp_path(kernel_mtk_path) != 0) {
+            fprintf(stderr, "Failed to create temporary KERNEL image path\n");
+            free(payload);
+            free(lk_data);
+            return -1;
+        }
+        if (create_temp_path(ramdisk_mtk_path) != 0) {
+            fprintf(stderr, "Failed to create temporary ROOTFS image path\n");
+            unlink(kernel_mtk_path);
+            free(payload);
+            free(lk_data);
+            return -1;
+        }
 
         if (wrap_file_as_mtk_image(kernel_path, kernel_mtk_path,
                                    "KERNEL", &kernel_size) != 0) {
@@ -508,15 +530,26 @@ int run_lk_mode(serial_t *s, const soc_info_t *soc, const char *payload_path,
             return -1;
         }
 
+        if (create_temp_path(bootimg_path) != 0) {
+            fprintf(stderr, "Failed to create temporary boot.img path\n");
+            unlink(kernel_mtk_path);
+            unlink(ramdisk_mtk_path);
+            free(payload);
+            free(lk_data);
+            return -1;
+        }
+
         snprintf(cmd, sizeof(cmd),
                  "mkbootimg --kernel %s --ramdisk %s --base 0x%x --kernel_offset 0x8000 "
-                 "--ramdisk_offset 0x4000000 -o /tmp/boot.img",
-                 kernel_mtk_path, ramdisk_mtk_path, soc->dram_base);
+                 "--ramdisk_offset 0x4000000 -o %s",
+                 kernel_mtk_path, ramdisk_mtk_path, soc->dram_base,
+                 bootimg_path);
         printf("Running: %s\n", cmd);
         if (system(cmd) != 0) {
             fprintf(stderr, "mkbootimg failed\n");
             unlink(kernel_mtk_path);
             unlink(ramdisk_mtk_path);
+            unlink(bootimg_path);
             free(payload);
             free(lk_data);
             return -1;
@@ -524,7 +557,8 @@ int run_lk_mode(serial_t *s, const soc_info_t *soc, const char *payload_path,
         unlink(kernel_mtk_path);
         unlink(ramdisk_mtk_path);
 
-        bootimg_data = read_file("/tmp/boot.img", &bootimg_size);
+        bootimg_data = read_file(bootimg_path, &bootimg_size);
+        unlink(bootimg_path);
         if (!bootimg_data) {
             fprintf(stderr, "Failed to read boot.img\n");
             free(payload);
