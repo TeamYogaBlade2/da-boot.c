@@ -48,6 +48,7 @@ typedef struct {
     uint32_t ptr_fastboot_okay;
     uint32_t ptr_fastboot_fail;
     uint32_t ptr_udc_stop;
+    uint32_t ptr_mtk_wdt_disable;
     uint32_t ptr_mtk_wdt_init;
     uint32_t ptr_boot_linux;
     uint32_t boot_mode_addr;

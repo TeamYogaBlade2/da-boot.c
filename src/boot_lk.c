@@ -31,6 +31,7 @@
 #define MT6589_LK_FASTBOOT_OKAY_OFFSET     0x1ee6cu
 #define MT6589_LK_FASTBOOT_FAIL_OFFSET     0x1ecd4u
 #define MT6589_LK_UDC_STOP_OFFSET          0x0e0b8u
+#define MT6589_LK_MTK_WDT_DISABLE_OFFSET   0x156d8u
 #define MT6589_LK_MTK_WDT_INIT_OFFSET      0x15718u
 #define MT6589_LK_BOOT_LINUX_OFFSET        0x1e3bcu
 #define MT6589_LK_MT_BOOT_INIT_OFFSET      0x1e9c8u
@@ -385,7 +386,7 @@ static void boot_arg_init(boot_arg_t *ba, uint32_t dram_size_per_rank,
     for (uint32_t i = 0; i < dram_ranks && i < 4; i++) {
         ba->dram_rank_size[i] = dram_size_per_rank;
     }
-    ba->boot_reason = 4; // BR_TOOL_BY_PASS_PWK
+    ba->boot_reason = 5; // BR_TOOL_BY_PASS_PWK
     ba->boot_time = 1337;
 }
 
@@ -628,6 +629,8 @@ int run_lk_mode(serial_t *s, const soc_info_t *soc, const char *payload_path,
         lk_params.ptr_fastboot_fail =
             lk_base + MT6589_LK_FASTBOOT_FAIL_OFFSET;
         lk_params.ptr_udc_stop = lk_base + MT6589_LK_UDC_STOP_OFFSET;
+        lk_params.ptr_mtk_wdt_disable =
+            lk_base + MT6589_LK_MTK_WDT_DISABLE_OFFSET;
         lk_params.ptr_mtk_wdt_init =
             lk_base + MT6589_LK_MTK_WDT_INIT_OFFSET;
         lk_params.ptr_boot_linux =

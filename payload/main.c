@@ -99,6 +99,7 @@ typedef void (*lk_fastboot_register_t)(const char *prefix,
 typedef void (*lk_mt_boot_init_t)(const void *app);
 typedef void (*lk_fastboot_ack_t)(const char *reason);
 typedef void (*lk_udc_stop_t)(void);
+typedef void (*lk_mtk_wdt_disable_t)(void);
 typedef void (*lk_wdt_init_t)(void);
 typedef void (*lk_boot_linux_t)(void *kernel, unsigned *tags,
                                 char *cmdline, unsigned machtype,
@@ -285,8 +286,13 @@ static void fastboot_boot_handler(const char *arg, void *data, unsigned sz) {
 
     ((lk_fastboot_ack_t)(uintptr_t)(g_lk_params.ptr_fastboot_okay | 1u))("");
     ((lk_udc_stop_t)(uintptr_t)(g_lk_params.ptr_udc_stop | 1u))();
+
 #if FASTBOOT_REENABLE_WDT
     ((lk_wdt_init_t)(uintptr_t)(g_lk_params.ptr_mtk_wdt_init | 1u))();
+#else
+    /* Keep the watchdog disabled immediately before kernel entry. */
+    ((lk_mtk_wdt_disable_t)(uintptr_t)
+        (g_lk_params.ptr_mtk_wdt_disable | 1u))();
 #endif
 
     /* Match the stock cmd_boot() order: WDT setup precedes mode reset. */
