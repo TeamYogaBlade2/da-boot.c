@@ -39,6 +39,37 @@ static void protocol_append_payload_log(protocol_t *p,
 	}
 }
 
+static int message_min_size(const uint8_t *buf, uint32_t size) {
+    if (!buf || size < 1)
+        return -1;
+
+    switch (buf[0]) {
+        case MSG_ACK:
+            return 1;
+        case MSG_READ:
+        case MSG_WRITE:
+        case MSG_FLUSH_CACHE:
+        case MSG_BLACKLIST_RANGE:
+            return 9;
+        case MSG_JUMP:
+            return 15;
+        case MSG_HOOK:
+            return 2;
+        case MSG_GET_FREE_RANGE:
+            return 5;
+        case MSG_SET_PARAMS:
+            if (size < 2)
+                return -1;
+            if (buf[1] == PARAMS_PRELOADER)
+                return 6;
+            if (buf[1] == PARAMS_LK)
+                return 18;
+            return -1;
+        default:
+            return -1;
+    }
+}
+
 int protocol_send_message(protocol_t *p, const message_t *msg) {
     uint8_t buf[512];
     uint32_t len = 0;
@@ -81,11 +112,13 @@ int protocol_send_message(protocol_t *p, const message_t *msg) {
             buf[len++] = msg->set_params.type;
             if (msg->set_params.type == PARAMS_PRELOADER) {
                 memcpy(&buf[len], &msg->set_params.preloader.ptr_bldr_jump, 4); len += 4;
-            } else {
+            } else if (msg->set_params.type == PARAMS_LK) {
                 memcpy(&buf[len], &msg->set_params.lk.ptr_mt_part_generic_read, 4); len += 4;
                 memcpy(&buf[len], &msg->set_params.lk.ptr_mt_part_get_partition, 4); len += 4;
                 memcpy(&buf[len], &msg->set_params.lk.bootimg_scratch_addr, 4); len += 4;
                 memcpy(&buf[len], &msg->set_params.lk.bootimg_scratch_size, 4); len += 4;
+            } else {
+                return -1;
             }
             break;
         default:
@@ -102,11 +135,19 @@ int protocol_send_message(protocol_t *p, const message_t *msg) {
 
 int protocol_read_message(protocol_t *p, message_t *msg) {
     uint8_t size_buf[4];
+    int min_size;
+
     if (serial_read(p->io, size_buf, 4, 5000) != 0) return -1;
     uint32_t size = (size_buf[0] << 24) | (size_buf[1] << 16) | (size_buf[2] << 8) | size_buf[3];
     if (size > sizeof(p->buf)) return -1;
 
     if (serial_read(p->io, p->buf, size, 5000) != 0) return -1;
+
+    min_size = message_min_size(p->buf, size);
+    if (min_size < 0 || size < (uint32_t)min_size)
+        return -1;
+
+    memset(msg, 0, sizeof(*msg));
 
     uint32_t off = 0;
     msg->type = p->buf[off++];
@@ -194,7 +235,12 @@ int protocol_read_response(protocol_t *p, response_t *resp) {
             return -1;
         }
 
+        memset(resp, 0, sizeof(*resp));
         uint32_t off = 0;
+        if (size == 0) {
+            protocol_flush_payload_log(p);
+            return -1;
+        }
         resp->type = p->buf[off++];
         if (resp->type == RESP_LOG) {
             if (size > 1)
@@ -213,6 +259,9 @@ int protocol_read_response(protocol_t *p, response_t *resp) {
                 return -1;
             }
             memcpy(&resp->addr, &p->buf[off], 4); off += 4;
+        } else if (resp->type != RESP_ACK && resp->type != RESP_DATA) {
+            protocol_flush_payload_log(p);
+            return -1;
         }
         protocol_flush_payload_log(p);
         return 0;
