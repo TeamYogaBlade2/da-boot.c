@@ -3,6 +3,8 @@
 #include <string.h>
 #include <unistd.h>
 
+#define MTK_HANDSHAKE_MAX_RETRIES 16u
+
 static int put_byte(serial_t *s, uint8_t b) {
     return serial_write(s, &b, 1);
 }
@@ -33,16 +35,24 @@ static int get_dword(serial_t *s, uint32_t *d) {
 int mtk_handshake(serial_t *s) {
     const uint8_t seq[] = {0xa0, 0x0a, 0x50, 0x05};
     uint8_t response;
-    for (int i = 0; i < 4; i++) {
+    unsigned retries = 0;
+    for (size_t i = 0; i < sizeof(seq); ) {
         // 送信
-        put_byte(s, seq[i]);
+        if (put_byte(s, seq[i]) != 0)
+            return -1;
         // 受信（エコー）
         if (get_byte(s, &response) != 0) return -1;
         if (response != (uint8_t)~seq[i]) {
             // リトライ
-            i = -1;
+            if (++retries >= MTK_HANDSHAKE_MAX_RETRIES) {
+                fprintf(stderr,
+                        "[mtk] handshake retry limit exceeded\n");
+                return -1;
+            }
+            i = 0;
             continue;
         }
+        i++;
     }
     // ガーベージクリア
     usleep(200000);
