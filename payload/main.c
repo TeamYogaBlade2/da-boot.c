@@ -111,6 +111,14 @@ typedef void (*lk_boot_linux_t)(void *kernel, unsigned *tags,
 #define FASTBOOT_DEFAULT_CMDLINE  "console=tty0 console=ttyMT3,921600n1 root=/dev/ram"
 #define FASTBOOT_CMDLINE_SIZE     1024u
 
+/*
+ * Stock MT6589 LK re-enables the watchdog in cmd_boot(), but a custom
+ * fastboot-booted kernel may not initialize the MediaTek watchdog early
+ * enough to prevent an immediate WDT reset. Keep it disabled by default;
+ * set to 1 to retain stock behavior while debugging.
+ */
+#define FASTBOOT_REENABLE_WDT      0
+
 typedef struct __attribute__((packed)) {
     char magic[8];
     uint32_t kernel_size;
@@ -277,7 +285,9 @@ static void fastboot_boot_handler(const char *arg, void *data, unsigned sz) {
 
     ((lk_fastboot_ack_t)(uintptr_t)(g_lk_params.ptr_fastboot_okay | 1u))("");
     ((lk_udc_stop_t)(uintptr_t)(g_lk_params.ptr_udc_stop | 1u))();
+#if FASTBOOT_REENABLE_WDT
     ((lk_wdt_init_t)(uintptr_t)(g_lk_params.ptr_mtk_wdt_init | 1u))();
+#endif
 
     /* Match the stock cmd_boot() order: WDT setup precedes mode reset. */
     ((volatile uint32_t *)(uintptr_t)g_lk_params.boot_mode_addr)[0] = 0;
