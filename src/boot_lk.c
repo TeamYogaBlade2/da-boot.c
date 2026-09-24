@@ -353,7 +353,7 @@ static void boot_arg_init(boot_arg_t *ba, uint32_t dram_size_per_rank,
     for (uint32_t i = 0; i < dram_ranks && i < 4; i++) {
         ba->dram_rank_size[i] = dram_size_per_rank;
     }
-    ba->boot_reason = 4; // BR_TOOL_BY_PASS_PWK
+    ba->boot_reason = 5; // BR_TOOL_BY_PASS_PWK
     ba->boot_time = 1337;
 }
 

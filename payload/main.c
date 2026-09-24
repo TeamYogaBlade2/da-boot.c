@@ -188,6 +188,7 @@ static void fastboot_boot_handler(const char *arg, void *data, unsigned sz) {
     uint32_t ramdisk_copy_size;
     uint64_t kernel_off;
     uint64_t ramdisk_off;
+    static char boot_cmdline[sizeof(hdr.cmdline)];
 
     (void)arg;
 
@@ -241,16 +242,26 @@ static void fastboot_boot_handler(const char *arg, void *data, unsigned sz) {
         memcpy((void *)(uintptr_t)hdr.ramdisk_addr,
                ramdisk_src, ramdisk_copy_size);
 
-    /* cmd_boot() changes the mode back to NORMAL_BOOT before boot_linux(). */
-    ((volatile uint32_t *)(uintptr_t)g_lk_params.boot_mode_addr)[0] = 0;
+    /*
+     * boot_linux() appends LK-specific parameters to cmdline with
+     * sprintf(cmdline, "%s ...", cmdline, ...).  The storage boot path
+     * passes its separate g_CMDLINE buffer, not the boot-image header
+     * itself.  Keep the same separation here.
+     */
+    memcpy(boot_cmdline, hdr.cmdline, sizeof(boot_cmdline));
+    boot_cmdline[sizeof(boot_cmdline) - 1] = '\0';
+
     ((lk_fastboot_ack_t)(uintptr_t)(g_lk_params.ptr_fastboot_okay | 1u))("");
     ((lk_udc_stop_t)(uintptr_t)(g_lk_params.ptr_udc_stop | 1u))();
     ((lk_wdt_init_t)(uintptr_t)(g_lk_params.ptr_mtk_wdt_init | 1u))();
 
+    /* Match the stock cmd_boot() order: WDT setup precedes mode reset. */
+    ((volatile uint32_t *)(uintptr_t)g_lk_params.boot_mode_addr)[0] = 0;
+
     ((lk_boot_linux_t)(uintptr_t)(g_lk_params.ptr_boot_linux | 1u))(
         (void *)(uintptr_t)hdr.kernel_addr,
         (unsigned *)(uintptr_t)hdr.tags_addr,
-        hdr.cmdline,
+        boot_cmdline,
         g_lk_params.machtype,
         (void *)(uintptr_t)hdr.ramdisk_addr,
         hdr.ramdisk_size);
