@@ -13,6 +13,7 @@
 __attribute__((section(".params"), used, aligned(4)))
 payload_params_t g_params = {
     .magic = MAGIC_DA,
+    .version = CURRENT_VERSION,
 };
 
 // USB通信関数（Preloaderから提供される）

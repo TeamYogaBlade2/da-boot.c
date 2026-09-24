@@ -11,7 +11,7 @@ uint8_t *read_file(const char *path, uint32_t *size) {
     fseek(f, 0, SEEK_END);
     long len = ftell(f);
     fseek(f, 0, SEEK_SET);
-    if (len <= 0) {
+    if (len <= 0 || (uint64_t)len > UINT32_MAX) {
         fclose(f);
         return NULL;
     }
@@ -33,9 +33,19 @@ uint8_t *read_file(const char *path, uint32_t *size) {
 // ペイロードパラメータ注入
 int inject_params(uint8_t *payload, uint32_t payload_size,
                   const payload_params_t *params) {
-    const uint32_t magic = MAGIC_DA;
+    struct {
+        uint32_t magic;
+        uint32_t version;
+    } marker = {
+        .magic = MAGIC_DA,
+        .version = CURRENT_VERSION,
+    };
+
+    if (!payload || !params || payload_size < sizeof(*params))
+        return -1;
+
     for (uint32_t i = 0; i + sizeof(payload_params_t) <= payload_size; i++) {
-        if (memcmp(payload + i, &magic, 4) == 0) {
+        if (memcmp(payload + i, &marker, sizeof(marker)) == 0) {
             memcpy(payload + i, params, sizeof(payload_params_t));
             printf("Params injected at offset 0x%x\n", i);
             return 0;
