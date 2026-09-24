@@ -116,7 +116,12 @@ int run_preloader_mode(serial_t *s, const soc_info_t *soc, const char *payload_p
         return -1;
     }
     message_init_ack(&msg);
-    protocol_send_message(&proto, &msg);
+    if (protocol_send_message(&proto, &msg) != 0) {
+        fprintf(stderr, "Failed to acknowledge payload handshake\n");
+        free(pl_data);
+        free(payload);
+        return -1;
+    }
 
     // Preloader params設定
     message_init_set_params_preloader(&msg, &pl_params);
@@ -196,8 +201,18 @@ int run_preloader_mode(serial_t *s, const soc_info_t *soc, const char *payload_p
     // ジャンプ
     printf("Jumping to 0x%x\n", jump_addr);
     message_init_jump(&msg, jump_addr, 0, 0, 0, 0);
-    protocol_send_message(&proto, &msg);
-    protocol_read_response(&proto, &resp);
+    if (protocol_send_message(&proto, &msg) != 0) {
+        fprintf(stderr, "Failed to send final jump request\n");
+        free(pl_data);
+        free(payload);
+        return -1;
+    }
+    if (protocol_read_response(&proto, &resp) == 0 && resp.type == RESP_NACK) {
+        fprintf(stderr, "Final jump rejected: err=%u\n", resp.err);
+        free(pl_data);
+        free(payload);
+        return -1;
+    }
 
     free(pl_data);
     free(payload);

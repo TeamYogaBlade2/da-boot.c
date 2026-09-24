@@ -369,15 +369,26 @@ int run_lk_mode(serial_t *s, const soc_info_t *soc, const char *payload_path,
         return -1;
     }
     message_init_ack(&msg);
-    protocol_send_message(&proto, &msg);
+    if (protocol_send_message(&proto, &msg) != 0) {
+        fprintf(stderr, "Failed to acknowledge payload handshake\n");
+        free(payload);
+        free(lk_data);
+        return -1;
+    }
 
     // Preloader params
     preloader_runner_params_t pl_params;
     pl_params.ptr_bldr_jump = bldr_jump;
     message_init_set_params_preloader(&msg, &pl_params);
-    protocol_send_message(&proto, &msg);
     response_t resp;
-    protocol_read_response(&proto, &resp);
+    if (protocol_send_message(&proto, &msg) != 0 ||
+        protocol_read_response(&proto, &resp) != 0 ||
+        resp.type != RESP_ACK) {
+        fprintf(stderr, "Failed to set preloader params\n");
+        free(payload);
+        free(lk_data);
+        return -1;
+    }
 
     // boot.img準備とアップロード
     uint32_t bootimg_addr = 0;
@@ -442,8 +453,9 @@ int run_lk_mode(serial_t *s, const soc_info_t *soc, const char *payload_path,
          */
         message_init_blacklist(&msg, MT6589_LK_KERNEL_ADDR,
                                MT6589_LK_KERNEL_ADDR + MTK_BOOT_PAGE_ALIGN(kernel_size));
-        protocol_send_message(&proto, &msg);
-        if (protocol_read_response(&proto, &resp) != 0 || resp.type != RESP_ACK) {
+        if (protocol_send_message(&proto, &msg) != 0 ||
+            protocol_read_response(&proto, &resp) != 0 ||
+            resp.type != RESP_ACK) {
             fprintf(stderr, "Failed to reserve LK kernel range\n");
             unlink(kernel_mtk_path);
             unlink(ramdisk_mtk_path);
@@ -454,8 +466,9 @@ int run_lk_mode(serial_t *s, const soc_info_t *soc, const char *payload_path,
 
         message_init_blacklist(&msg, MT6589_LK_RAMDISK_ADDR,
                                MT6589_LK_RAMDISK_ADDR + MTK_BOOT_PAGE_ALIGN(ramdisk_size));
-        protocol_send_message(&proto, &msg);
-        if (protocol_read_response(&proto, &resp) != 0 || resp.type != RESP_ACK) {
+        if (protocol_send_message(&proto, &msg) != 0 ||
+            protocol_read_response(&proto, &resp) != 0 ||
+            resp.type != RESP_ACK) {
             fprintf(stderr, "Failed to reserve LK ramdisk range\n");
             unlink(kernel_mtk_path);
             unlink(ramdisk_mtk_path);
@@ -466,8 +479,9 @@ int run_lk_mode(serial_t *s, const soc_info_t *soc, const char *payload_path,
 
         message_init_blacklist(&msg, lk_base,
                                lk_base + lk_content_size);
-        protocol_send_message(&proto, &msg);
-        if (protocol_read_response(&proto, &resp) != 0 || resp.type != RESP_ACK) {
+        if (protocol_send_message(&proto, &msg) != 0 ||
+            protocol_read_response(&proto, &resp) != 0 ||
+            resp.type != RESP_ACK) {
             fprintf(stderr, "Failed to reserve LK range\n");
             unlink(kernel_mtk_path);
             unlink(ramdisk_mtk_path);
@@ -478,8 +492,9 @@ int run_lk_mode(serial_t *s, const soc_info_t *soc, const char *payload_path,
 
         message_init_blacklist(&msg, boot_arg_addr,
                                boot_arg_addr + boot_arg_size);
-        protocol_send_message(&proto, &msg);
-        if (protocol_read_response(&proto, &resp) != 0 || resp.type != RESP_ACK) {
+        if (protocol_send_message(&proto, &msg) != 0 ||
+            protocol_read_response(&proto, &resp) != 0 ||
+            resp.type != RESP_ACK) {
             fprintf(stderr, "Failed to reserve boot arg range\n");
             unlink(kernel_mtk_path);
             unlink(ramdisk_mtk_path);
@@ -536,8 +551,9 @@ int run_lk_mode(serial_t *s, const soc_info_t *soc, const char *payload_path,
 
     // 空きメモリ取得
     message_init_get_free_range(&msg, bootimg_size);
-    protocol_send_message(&proto, &msg);
-    if (protocol_read_response(&proto, &resp) != 0 || resp.type != 'R') {
+    if (protocol_send_message(&proto, &msg) != 0 ||
+        protocol_read_response(&proto, &resp) != 0 ||
+        resp.type != RESP_RANGE || resp.addr == 0) {
         fprintf(stderr, "Failed to get free range\n");
         free(bootimg_data);
         free(payload);
@@ -635,8 +651,16 @@ int run_lk_mode(serial_t *s, const soc_info_t *soc, const char *payload_path,
     printf("Jumping to LK at 0x%x with boot arg at 0x%x\n",
            lk_base, boot_arg_addr);
     message_init_jump(&msg, lk_base, boot_arg_addr, boot_arg_size, 1, 1);
-    protocol_send_message(&proto, &msg);
-    protocol_read_response(&proto, &resp);
+    if (protocol_send_message(&proto, &msg) != 0) {
+        fprintf(stderr, "Failed to send final LK jump request\n");
+        free(payload);
+        return -1;
+    }
+    if (protocol_read_response(&proto, &resp) == 0 && resp.type == RESP_NACK) {
+        fprintf(stderr, "LK jump rejected: err=%u\n", resp.err);
+        free(payload);
+        return -1;
+    }
 
     free(payload);
     return 0;
