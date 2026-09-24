@@ -51,7 +51,7 @@ int mtk_handshake(serial_t *s) {
 }
 
 int mtk_get_hw_code(serial_t *s, uint16_t *hw_code) {
-    put_byte(s, CMD_GET_HW_CODE);
+    if (put_byte(s, CMD_GET_HW_CODE) != 0) return -1;
     uint8_t echo;
     if (get_byte(s, &echo) != 0) return -1;
     if (echo != CMD_GET_HW_CODE) return -1;
@@ -131,67 +131,68 @@ int mtk_send_da(serial_t *s, uint32_t addr, const uint8_t *data, uint32_t len) {
 }
 
 int mtk_jump_da(serial_t *s, uint32_t addr) {
-    put_byte(s, CMD_JUMP_DA);
+    if (put_byte(s, CMD_JUMP_DA) != 0) return -1;
     uint8_t echo;
-    get_byte(s, &echo);
+    if (get_byte(s, &echo) != 0) return -1;
     if (echo != CMD_JUMP_DA) return -1;
 
-    put_dword(s, addr);
+    if (put_dword(s, addr) != 0) return -1;
     uint32_t echo_addr;
-    get_dword(s, &echo_addr);
+    if (get_dword(s, &echo_addr) != 0) return -1;
     if (echo_addr != addr) return -1;
 
     uint16_t status;
-    get_word(s, &status);
+    if (get_word(s, &status) != 0) return -1;
     return status == 0 ? 0 : -1;
 }
 
 int mtk_read32(serial_t *s, uint32_t addr, uint32_t *data, uint32_t count) {
-    put_byte(s, CMD_READ32);
+    if (count && !data) return -1;
+    if (put_byte(s, CMD_READ32) != 0) return -1;
     uint8_t echo;
-    get_byte(s, &echo);
+    if (get_byte(s, &echo) != 0) return -1;
     if (echo != CMD_READ32) return -1;
 
-    put_dword(s, addr);
+    if (put_dword(s, addr) != 0) return -1;
     uint32_t echo_addr;
-    get_dword(s, &echo_addr);
+    if (get_dword(s, &echo_addr) != 0) return -1;
     if (echo_addr != addr) return -1;
 
-    put_dword(s, count);
+    if (put_dword(s, count) != 0) return -1;
     uint32_t echo_count;
-    get_dword(s, &echo_count);
+    if (get_dword(s, &echo_count) != 0) return -1;
     if (echo_count != count) return -1;
 
     uint16_t status;
-    get_word(s, &status);
+    if (get_word(s, &status) != 0) return -1;
     if (status != 0) return -1;
 
     for (uint32_t i = 0; i < count; i++) {
-        get_dword(s, &data[i]);
+        if (get_dword(s, &data[i]) != 0) return -1;
     }
 
     uint16_t final_status;
-    get_word(s, &final_status);
+    if (get_word(s, &final_status) != 0) return -1;
     return final_status == 0 ? 0 : -1;
 }
 
 int mtk_write32(serial_t *s, uint32_t addr, uint32_t data) {
-    put_byte(s, CMD_WRITE32);
+    if (put_byte(s, CMD_WRITE32) != 0) return -1;
     uint8_t echo;
-    get_byte(s, &echo);
+    if (get_byte(s, &echo) != 0) return -1;
     if (echo != CMD_WRITE32) return -1;
 
-    put_dword(s, addr);
+    if (put_dword(s, addr) != 0) return -1;
     uint32_t echo_addr;
-    get_dword(s, &echo_addr);
+    if (get_dword(s, &echo_addr) != 0) return -1;
     if (echo_addr != addr) return -1;
 
-    put_dword(s, data);
+    if (put_dword(s, data) != 0) return -1;
     uint32_t echo_data;
-    get_dword(s, &echo_data);
+    if (get_dword(s, &echo_data) != 0) return -1;
     if (echo_data != data) return -1;
 
     uint16_t status;
-    get_word(s, &status);
+    if (get_word(s, &status) != 0) return -1;
     return status == 0 ? 0 : -1;
 }
