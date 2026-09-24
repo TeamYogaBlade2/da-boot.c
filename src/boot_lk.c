@@ -249,6 +249,11 @@ int run_lk_mode(serial_t *s, const soc_info_t *soc, const char *payload_path,
                 uint32_t lk_mode) {
     printf("LK mode for %s\n", soc->name);
 
+    if (soc->hw_code != soc_mt6589.hw_code) {
+        fprintf(stderr, "LK mode currently supports MT6589 only\n");
+        return -1;
+    }
+
     if (!lk_path) {
         fprintf(stderr, "LK path required for LK mode\n");
         return -1;
