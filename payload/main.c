@@ -108,6 +108,8 @@ typedef void (*lk_boot_linux_t)(void *kernel, unsigned *tags,
 #define FASTBOOT_BOOT_HDR_SIZE    0x260u
 #define FASTBOOT_MTK_HDR_SIZE     0x200u
 #define FASTBOOT_MTK_MAGIC        0x58881688u
+#define FASTBOOT_DEFAULT_CMDLINE  "console=tty0 console=ttyMT3,921600n1 root=/dev/ram"
+#define FASTBOOT_CMDLINE_SIZE     1024u
 
 typedef struct __attribute__((packed)) {
     char magic[8];
@@ -188,7 +190,7 @@ static void fastboot_boot_handler(const char *arg, void *data, unsigned sz) {
     uint32_t ramdisk_copy_size;
     uint64_t kernel_off;
     uint64_t ramdisk_off;
-    static char boot_cmdline[sizeof(hdr.cmdline)];
+    static char boot_cmdline[FASTBOOT_CMDLINE_SIZE];
 
     (void)arg;
 
@@ -196,11 +198,13 @@ static void fastboot_boot_handler(const char *arg, void *data, unsigned sz) {
         return fastboot_boot_fail("invalid bootimage header");
 
     memcpy(&hdr, data, sizeof(hdr));
+    hdr.cmdline[sizeof(hdr.cmdline) - 1] = '\0';
     if (memcmp(hdr.magic, FASTBOOT_BOOT_MAGIC, sizeof(hdr.magic)) != 0) {
         if (sz < FASTBOOT_MTK_HDR_SIZE + sizeof(hdr))
             return fastboot_boot_fail("invalid bootimage header");
         hdr_off = FASTBOOT_MTK_HDR_SIZE;
         memcpy(&hdr, (const uint8_t *)data + hdr_off, sizeof(hdr));
+        hdr.cmdline[sizeof(hdr.cmdline) - 1] = '\0';
         if (memcmp(hdr.magic, FASTBOOT_BOOT_MAGIC, sizeof(hdr.magic)) != 0)
             return fastboot_boot_fail("invalid bootimage header");
     }
@@ -248,8 +252,26 @@ static void fastboot_boot_handler(const char *arg, void *data, unsigned sz) {
      * passes its separate g_CMDLINE buffer, not the boot-image header
      * itself.  Keep the same separation here.
      */
-    memcpy(boot_cmdline, hdr.cmdline, sizeof(boot_cmdline));
-    boot_cmdline[sizeof(boot_cmdline) - 1] = '\0';
+    {
+        const char *image_cmdline = hdr.cmdline;
+        size_t image_len = strlen(image_cmdline);
+        const char *cmdline = image_len
+            ? image_cmdline
+            : FASTBOOT_DEFAULT_CMDLINE;
+        size_t cmdline_len = strlen(cmdline);
+
+        /*
+         * The stock MT6589 LK initializes g_CMDLINE from
+         * COMMANDLINE_TO_KERNEL. mboot_android_load_bootimg() does not
+         * replace it with boot_hdr.cmdline, so an ordinary stock boot uses
+         * the default cmdline even when the image header is empty.
+         */
+        if (cmdline_len >= sizeof(boot_cmdline))
+            return fastboot_boot_fail("boot command line too long");
+
+        memcpy(boot_cmdline, cmdline, cmdline_len);
+        boot_cmdline[cmdline_len] = '\0';
+    }
 
     ((lk_fastboot_ack_t)(uintptr_t)(g_lk_params.ptr_fastboot_okay | 1u))("");
     ((lk_udc_stop_t)(uintptr_t)(g_lk_params.ptr_udc_stop | 1u))();
