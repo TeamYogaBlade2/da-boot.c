@@ -31,7 +31,7 @@
 #define MT6589_LK_FASTBOOT_OKAY_OFFSET     0x1ee6cu
 #define MT6589_LK_FASTBOOT_FAIL_OFFSET     0x1ecd4u
 #define MT6589_LK_UDC_STOP_OFFSET          0x0e0b8u
-#define MT6589_LK_MTK_WDT_INIT_OFFSET      0x15718u
+#define MT6589_LK_MTK_WDT_RESTART_OFFSET   0x15708u
 #define MT6589_LK_BOOT_LINUX_OFFSET        0x1e3bcu
 #define MT6589_LK_MT_BOOT_INIT_OFFSET      0x1e9c8u
 #define MT6589_LK_BOOT_MODE_OFFSET         0x44418u
@@ -629,7 +629,7 @@ int run_lk_mode(serial_t *s, const soc_info_t *soc, const char *payload_path,
             lk_base + MT6589_LK_FASTBOOT_FAIL_OFFSET;
         lk_params.ptr_udc_stop = lk_base + MT6589_LK_UDC_STOP_OFFSET;
         lk_params.ptr_mtk_wdt_init =
-            lk_base + MT6589_LK_MTK_WDT_INIT_OFFSET;
+            lk_base + MT6589_LK_MTK_WDT_RESTART_OFFSET;
         lk_params.ptr_boot_linux =
             lk_base + MT6589_LK_BOOT_LINUX_OFFSET;
         lk_params.boot_mode_addr =
