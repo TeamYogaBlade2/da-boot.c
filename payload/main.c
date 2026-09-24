@@ -71,6 +71,10 @@ static void uart_print_hex(uint32_t v) {
     uart_print(buf);
 }
 
+static int address_range_valid(uint32_t addr, uint32_t size) {
+    return size <= UINT32_MAX - addr;
+}
+
 // USB送受信ラッパー
 static int usb_send_wrapper(const uint8_t *buf, uint32_t len) {
     return usb_send(buf, len);
@@ -290,10 +294,18 @@ static void handle_message(protocol_t *proto, message_t *msg) {
             break;
         case MSG_READ: {
             // データ送信
-            uint8_t *data = (uint8_t*)msg->read.addr;
             uint32_t size = msg->read.size;
             // レスポンスとしてデータを直接送る（特殊）
             uint8_t buf[512];
+
+            if (size > sizeof(buf) - 1u ||
+                !address_range_valid(msg->read.addr, size)) {
+                resp.type = RESP_NACK;
+                resp.err = PROTO_ERR_INVALID_PARAMS;
+                break;
+            }
+
+            uint8_t *data = (uint8_t*)msg->read.addr;
             uint32_t len = 0;
             buf[len++] = RESP_DATA;
             memcpy(&buf[len], data, size); len += size;
@@ -304,17 +316,44 @@ static void handle_message(protocol_t *proto, message_t *msg) {
         }
         case MSG_WRITE: {
             // データ受信
-            uint8_t *data = (uint8_t*)msg->write.addr;
             uint32_t size = msg->write.size;
+            if (!address_range_valid(msg->write.addr, size)) {
+                resp.type = RESP_NACK;
+                resp.err = PROTO_ERR_INVALID_PARAMS;
+                break;
+            }
+
+            uint8_t *data = (uint8_t*)msg->write.addr;
             // 長さ受信
             uint8_t size_buf[4];
-            usb_recv(size_buf, 4, 0);
-            uint32_t recv_len = __builtin_bswap32(*(uint32_t*)size_buf);
-            usb_recv(data, recv_len, 0);
+            uint32_t recv_len;
+            if (usb_recv(size_buf, 4, 0) != 0) {
+                resp.type = RESP_NACK;
+                resp.err = PROTO_ERR_UNREACHABLE;
+                break;
+            }
+            memcpy(&recv_len, size_buf, sizeof(recv_len));
+            recv_len = __builtin_bswap32(recv_len);
+            if (recv_len != size) {
+                resp.type = RESP_NACK;
+                resp.err = PROTO_ERR_INVALID_PARAMS;
+                break;
+            }
+            if (usb_recv(data, recv_len, 0) != 0) {
+                resp.type = RESP_NACK;
+                resp.err = PROTO_ERR_UNREACHABLE;
+                break;
+            }
             resp.type = RESP_ACK;
             break;
         }
         case MSG_FLUSH_CACHE:
+            if (!address_range_valid(msg->flush_cache.addr,
+                                     msg->flush_cache.size)) {
+                resp.type = RESP_NACK;
+                resp.err = PROTO_ERR_INVALID_PARAMS;
+                break;
+            }
             flush_dcache(msg->flush_cache.addr, msg->flush_cache.size);
             flush_icache();
             resp.type = RESP_ACK;
@@ -362,17 +401,22 @@ static void handle_message(protocol_t *proto, message_t *msg) {
             break;
         case MSG_GET_FREE_RANGE: {
             mem_range_t range;
-            if (find_unused_range(&g_params, msg->get_free_range.size, &range) == 0) {
+            if (msg->get_free_range.size != 0 &&
+                find_unused_range(&g_params, msg->get_free_range.size, &range) == 0) {
                 resp.type = RESP_RANGE;
                 resp.addr = range.start;
             } else {
-                resp.type = RESP_RANGE;
-                resp.addr = 0; // null相当
+                resp.type = RESP_NACK;
+                resp.err = PROTO_ERR_UNREACHABLE;
             }
             break;
         }
         case MSG_BLACKLIST_RANGE:
-            if (blacklist_dl(&g_params, msg->blacklist.start, msg->blacklist.end) == 0) {
+            if (msg->blacklist.start >= msg->blacklist.end) {
+                resp.type = RESP_NACK;
+                resp.err = PROTO_ERR_INVALID_PARAMS;
+            } else if (blacklist_dl(&g_params, msg->blacklist.start,
+                                    msg->blacklist.end) == 0) {
                 resp.type = RESP_ACK;
             } else {
                 resp.type = RESP_NACK;
