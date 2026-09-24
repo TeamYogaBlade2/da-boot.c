@@ -86,6 +86,202 @@ static int usb_recv_wrapper(uint8_t *buf, uint32_t len, uint32_t timeout) {
 }
 
 // LKフック関数
+/*
+ * The Blade 10 KitKat LK is a USER_BUILD, so fastboot_init() omits the
+ * "boot" registration. Inject it after the stock initializer has set up
+ * the fastboot state and command list.
+ */
+typedef void (*lk_fastboot_handler_t)(const char *arg, void *data, unsigned size);
+typedef int (*lk_fastboot_init_t)(void *base, unsigned size);
+typedef void (*lk_fastboot_register_t)(const char *prefix,
+                                        lk_fastboot_handler_t handler,
+                                        unsigned char security_enabled);
+typedef void (*lk_fastboot_ack_t)(const char *reason);
+typedef void (*lk_udc_stop_t)(void);
+typedef void (*lk_wdt_init_t)(void);
+typedef void (*lk_boot_linux_t)(void *kernel, unsigned *tags,
+                                char *cmdline, unsigned machtype,
+                                void *ramdisk, unsigned ramdisk_size);
+
+#define FASTBOOT_BOOT_MAGIC       "ANDROID!"
+#define FASTBOOT_BOOT_HDR_SIZE    0x260u
+#define FASTBOOT_MTK_HDR_SIZE     0x200u
+#define FASTBOOT_MTK_MAGIC        0x58881688u
+
+typedef struct __attribute__((packed)) {
+    char magic[8];
+    uint32_t kernel_size;
+    uint32_t kernel_addr;
+    uint32_t ramdisk_size;
+    uint32_t ramdisk_addr;
+    uint32_t second_size;
+    uint32_t second_addr;
+    uint32_t tags_addr;
+    uint32_t page_size;
+    uint32_t unused[2];
+    char name[16];
+    char cmdline[512];
+    uint32_t id[8];
+} fastboot_boot_img_hdr_t;
+
+typedef struct __attribute__((packed)) {
+    uint32_t magic;
+    uint32_t size;
+    char name[32];
+} fastboot_mtk_hdr_t;
+
+_Static_assert(sizeof(fastboot_boot_img_hdr_t) == FASTBOOT_BOOT_HDR_SIZE,
+               "unexpected Android boot image header size");
+
+static void fastboot_boot_fail(const char *reason) {
+    lk_fastboot_ack_t fail =
+        (lk_fastboot_ack_t)(uintptr_t)(g_lk_params.ptr_fastboot_fail | 1u);
+    if (fail)
+        fail(reason);
+}
+
+/* Accept both a normal Android boot image and MTK-wrapped kernel/rootfs data. */
+static int fastboot_resolve_component(const uint8_t **data, uint32_t *avail,
+                                      const char *expected_name,
+                                      uint32_t image_size,
+                                      uint32_t *copy_size) {
+    fastboot_mtk_hdr_t hdr;
+
+    if (!data || !*data || !avail || !expected_name || !copy_size)
+        return -1;
+
+    *copy_size = image_size;
+    if (*avail < FASTBOOT_MTK_HDR_SIZE)
+        return *copy_size <= *avail ? 0 : -1;
+
+    memcpy(&hdr, *data, sizeof(hdr));
+    if (hdr.magic != FASTBOOT_MTK_MAGIC ||
+        strncmp(hdr.name, expected_name, strlen(expected_name)) != 0)
+        return *copy_size <= *avail ? 0 : -1;
+
+    if (hdr.size > *avail - FASTBOOT_MTK_HDR_SIZE)
+        return -1;
+
+    /* mkbootimg() records either the raw size or raw+0x200 MTK header size. */
+    if (image_size == hdr.size + FASTBOOT_MTK_HDR_SIZE || image_size == hdr.size) {
+        *data += FASTBOOT_MTK_HDR_SIZE;
+        *avail -= FASTBOOT_MTK_HDR_SIZE;
+        *copy_size = hdr.size;
+    } else {
+        return -1;
+    }
+
+    return *copy_size <= *avail ? 0 : -1;
+}
+
+static void fastboot_boot_handler(const char *arg, void *data, unsigned sz) {
+    fastboot_boot_img_hdr_t hdr;
+    uint32_t hdr_off = 0;
+    uint32_t kernel_actual;
+    uint32_t ramdisk_actual;
+    const uint8_t *kernel_src;
+    const uint8_t *ramdisk_src;
+    uint32_t kernel_avail;
+    uint32_t ramdisk_avail;
+    uint32_t kernel_copy_size;
+    uint32_t ramdisk_copy_size;
+    uint64_t kernel_off;
+    uint64_t ramdisk_off;
+
+    (void)arg;
+
+    if (!data || sz < sizeof(hdr))
+        return fastboot_boot_fail("invalid bootimage header");
+
+    memcpy(&hdr, data, sizeof(hdr));
+    if (memcmp(hdr.magic, FASTBOOT_BOOT_MAGIC, sizeof(hdr.magic)) != 0) {
+        if (sz < FASTBOOT_MTK_HDR_SIZE + sizeof(hdr))
+            return fastboot_boot_fail("invalid bootimage header");
+        hdr_off = FASTBOOT_MTK_HDR_SIZE;
+        memcpy(&hdr, (const uint8_t *)data + hdr_off, sizeof(hdr));
+        if (memcmp(hdr.magic, FASTBOOT_BOOT_MAGIC, sizeof(hdr.magic)) != 0)
+            return fastboot_boot_fail("invalid bootimage header");
+    }
+
+    if (!hdr.page_size || (hdr.page_size & (hdr.page_size - 1u)) != 0)
+        return fastboot_boot_fail("invalid page size");
+    if (hdr.kernel_size > UINT32_MAX - (hdr.page_size - 1u) ||
+        hdr.ramdisk_size > UINT32_MAX - (hdr.page_size - 1u))
+        return fastboot_boot_fail("bootimage too large");
+
+    kernel_actual = (hdr.kernel_size + hdr.page_size - 1u) &
+                    ~(hdr.page_size - 1u);
+    ramdisk_actual = (hdr.ramdisk_size + hdr.page_size - 1u) &
+                     ~(hdr.page_size - 1u);
+
+    kernel_off = (uint64_t)hdr_off + hdr.page_size;
+    ramdisk_off = kernel_off + kernel_actual;
+
+    if (kernel_off > sz || kernel_actual > sz - kernel_off ||
+        ramdisk_off > sz || ramdisk_actual > sz - ramdisk_off)
+        return fastboot_boot_fail("incomplete bootimage");
+
+    kernel_src = (const uint8_t *)data + (uint32_t)kernel_off;
+    kernel_avail = (uint32_t)((uint64_t)sz - kernel_off);
+    if (fastboot_resolve_component(&kernel_src, &kernel_avail, "KERNEL",
+                                   hdr.kernel_size, &kernel_copy_size) != 0)
+        return fastboot_boot_fail("invalid kernel image");
+
+    ramdisk_src = (const uint8_t *)data + (uint32_t)ramdisk_off;
+    ramdisk_avail = (uint32_t)((uint64_t)sz - ramdisk_off);
+    if (fastboot_resolve_component(&ramdisk_src, &ramdisk_avail, "ROOTFS",
+                                   hdr.ramdisk_size, &ramdisk_copy_size) != 0)
+        return fastboot_boot_fail("invalid ramdisk image");
+
+    if (hdr.kernel_size && kernel_copy_size)
+        memcpy((void *)(uintptr_t)hdr.kernel_addr,
+               kernel_src, kernel_copy_size);
+    if (hdr.ramdisk_size && ramdisk_copy_size)
+        memcpy((void *)(uintptr_t)hdr.ramdisk_addr,
+               ramdisk_src, ramdisk_copy_size);
+
+    /* cmd_boot() changes the mode back to NORMAL_BOOT before boot_linux(). */
+    ((volatile uint32_t *)(uintptr_t)g_lk_params.boot_mode_addr)[0] = 0;
+    ((lk_fastboot_ack_t)(uintptr_t)(g_lk_params.ptr_fastboot_okay | 1u))("");
+    ((lk_udc_stop_t)(uintptr_t)(g_lk_params.ptr_udc_stop | 1u))();
+    ((lk_wdt_init_t)(uintptr_t)(g_lk_params.ptr_mtk_wdt_init | 1u))();
+
+    ((lk_boot_linux_t)(uintptr_t)(g_lk_params.ptr_boot_linux | 1u))(
+        (void *)(uintptr_t)hdr.kernel_addr,
+        (unsigned *)(uintptr_t)hdr.tags_addr,
+        hdr.cmdline,
+        g_lk_params.machtype,
+        (void *)(uintptr_t)hdr.ramdisk_addr,
+        hdr.ramdisk_size);
+
+    for (;;)
+        ;
+}
+
+static int fastboot_init_hook(void *base, unsigned size) {
+    lk_fastboot_init_t original;
+    lk_fastboot_register_t reg;
+    int ret;
+
+    if (!g_lk_params.ptr_fastboot_init ||
+        !g_lk_params.ptr_fastboot_register)
+        return -1;
+
+    original = (lk_fastboot_init_t)(uintptr_t)
+        interceptor_original(g_lk_params.ptr_fastboot_init);
+    if (!original)
+        return -1;
+
+    ret = original(base, size);
+    if (ret != 0)
+        return ret;
+
+    reg = (lk_fastboot_register_t)(uintptr_t)
+        (g_lk_params.ptr_fastboot_register | 1u);
+    reg("boot", fastboot_boot_handler, 0);
+    return 0;
+}
+
 uint32_t mt_part_generic_read_hook(void *dev, uint32_t read_cb,
                                    uint32_t src_lo, uint32_t src_hi,
                                    uint8_t *dst, uint32_t size);
@@ -382,7 +578,20 @@ static void handle_message(protocol_t *proto, message_t *msg) {
             while(1);
         }
         case MSG_HOOK:
-            if (msg->hook == HOOK_MT_PART_GENERIC_READ && g_has_lk_params) {
+            if (msg->hook == HOOK_FASTBOOT_INIT && g_has_lk_params) {
+                uart_print("Installing fastboot_init hook at 0x");
+                uart_print_hex(g_lk_params.ptr_fastboot_init | 1u);
+                uart_print("\n");
+                if (interceptor_replace(g_lk_params.ptr_fastboot_init | 1,
+                                         (void*)fastboot_init_hook) == 0) {
+                    uart_print("fastboot_init hook installed\n");
+                    resp.type = RESP_ACK;
+                } else {
+                    uart_print("fastboot_init hook failed\n");
+                    resp.type = RESP_NACK;
+                    resp.err = PROTO_ERR_NOT_SUPPORTED;
+                }
+            } else if (msg->hook == HOOK_MT_PART_GENERIC_READ && g_has_lk_params) {
                 uart_print("Installing mt_part_generic_read hook at 0x");
                 uart_print_hex(g_lk_params.ptr_mt_part_generic_read | 1u);
                 uart_print("\n");

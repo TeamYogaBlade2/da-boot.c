@@ -63,6 +63,15 @@ typedef struct {
     uint32_t ptr_mt_part_get_partition;
     uint32_t bootimg_scratch_addr;
     uint32_t bootimg_scratch_size;
+    uint32_t ptr_fastboot_init;
+    uint32_t ptr_fastboot_register;
+    uint32_t ptr_fastboot_okay;
+    uint32_t ptr_fastboot_fail;
+    uint32_t ptr_udc_stop;
+    uint32_t ptr_mtk_wdt_init;
+    uint32_t ptr_boot_linux;
+    uint32_t boot_mode_addr;
+    uint32_t machtype;
 } lk_runner_params_t;
 
 void payload_params_init(payload_params_t *p, uint32_t mem_start, uint32_t mem_end,

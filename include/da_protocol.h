@@ -27,7 +27,8 @@ typedef enum {
 
 // フックID
 typedef enum {
-    HOOK_MT_PART_GENERIC_READ = 0
+    HOOK_MT_PART_GENERIC_READ = 0,
+    HOOK_FASTBOOT_INIT = 1
 } hook_id_t;
 
 // パラメータ種別

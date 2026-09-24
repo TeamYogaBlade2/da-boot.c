@@ -63,7 +63,7 @@ static int message_min_size(const uint8_t *buf, uint32_t size) {
             if (buf[1] == PARAMS_PRELOADER)
                 return 6;
             if (buf[1] == PARAMS_LK)
-                return 18;
+                return 54;
             return -1;
         default:
             return -1;
@@ -117,6 +117,15 @@ int protocol_send_message(protocol_t *p, const message_t *msg) {
                 memcpy(&buf[len], &msg->set_params.lk.ptr_mt_part_get_partition, 4); len += 4;
                 memcpy(&buf[len], &msg->set_params.lk.bootimg_scratch_addr, 4); len += 4;
                 memcpy(&buf[len], &msg->set_params.lk.bootimg_scratch_size, 4); len += 4;
+                memcpy(&buf[len], &msg->set_params.lk.ptr_fastboot_init, 4); len += 4;
+                memcpy(&buf[len], &msg->set_params.lk.ptr_fastboot_register, 4); len += 4;
+                memcpy(&buf[len], &msg->set_params.lk.ptr_fastboot_okay, 4); len += 4;
+                memcpy(&buf[len], &msg->set_params.lk.ptr_fastboot_fail, 4); len += 4;
+                memcpy(&buf[len], &msg->set_params.lk.ptr_udc_stop, 4); len += 4;
+                memcpy(&buf[len], &msg->set_params.lk.ptr_mtk_wdt_init, 4); len += 4;
+                memcpy(&buf[len], &msg->set_params.lk.ptr_boot_linux, 4); len += 4;
+                memcpy(&buf[len], &msg->set_params.lk.boot_mode_addr, 4); len += 4;
+                memcpy(&buf[len], &msg->set_params.lk.machtype, 4); len += 4;
             } else {
                 return -1;
             }
@@ -193,6 +202,15 @@ int protocol_read_message(protocol_t *p, message_t *msg) {
                 memcpy(&msg->set_params.lk.ptr_mt_part_get_partition, &p->buf[off], 4); off += 4;
                 memcpy(&msg->set_params.lk.bootimg_scratch_addr, &p->buf[off], 4); off += 4;
                 memcpy(&msg->set_params.lk.bootimg_scratch_size, &p->buf[off], 4); off += 4;
+                memcpy(&msg->set_params.lk.ptr_fastboot_init, &p->buf[off], 4); off += 4;
+                memcpy(&msg->set_params.lk.ptr_fastboot_register, &p->buf[off], 4); off += 4;
+                memcpy(&msg->set_params.lk.ptr_fastboot_okay, &p->buf[off], 4); off += 4;
+                memcpy(&msg->set_params.lk.ptr_fastboot_fail, &p->buf[off], 4); off += 4;
+                memcpy(&msg->set_params.lk.ptr_udc_stop, &p->buf[off], 4); off += 4;
+                memcpy(&msg->set_params.lk.ptr_mtk_wdt_init, &p->buf[off], 4); off += 4;
+                memcpy(&msg->set_params.lk.ptr_boot_linux, &p->buf[off], 4); off += 4;
+                memcpy(&msg->set_params.lk.boot_mode_addr, &p->buf[off], 4); off += 4;
+                memcpy(&msg->set_params.lk.machtype, &p->buf[off], 4); off += 4;
             }
             break;
         default:

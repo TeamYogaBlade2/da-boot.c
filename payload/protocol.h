@@ -31,6 +31,7 @@
 
 // フックID
 #define HOOK_MT_PART_GENERIC_READ    0
+#define HOOK_FASTBOOT_INIT            1
 
 // パラメータタイプ
 #define PARAMS_PRELOADER  0

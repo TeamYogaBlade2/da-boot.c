@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <sys/wait.h>
 #include "serial.h"
 #include "mtk_protocol.h"
 #include "da_protocol.h"
@@ -23,6 +24,17 @@
 /* Fixed load addresses used by the Blade 10 KitKat LK. */
 #define MT6589_LK_KERNEL_ADDR  0x80008000u
 #define MT6589_LK_RAMDISK_ADDR 0x84000000u
+
+/* Exact Blade 10 KitKat LK offsets relative to lk_base = 0x81E00000. */
+#define MT6589_LK_FASTBOOT_INIT_OFFSET     0x1ee7cu
+#define MT6589_LK_FASTBOOT_REGISTER_OFFSET 0x1ea9cu
+#define MT6589_LK_FASTBOOT_OKAY_OFFSET     0x1ee6cu
+#define MT6589_LK_FASTBOOT_FAIL_OFFSET     0x1ecd4u
+#define MT6589_LK_UDC_STOP_OFFSET          0x0e0b8u
+#define MT6589_LK_MTK_WDT_INIT_OFFSET      0x15718u
+#define MT6589_LK_BOOT_LINUX_OFFSET        0x1e3bcu
+#define MT6589_LK_BOOT_MODE_OFFSET         0x4d1c4u
+#define MT6589_LK_MACHTYPE                 0x19bdu
 
 typedef struct __attribute__((packed)) {
     uint32_t magic;
@@ -113,6 +125,97 @@ static int wrap_file_as_mtk_image(const char *input_path,
         *data_size = size;
     free(data);
     return ret;
+}
+
+/* Build a normal Android boot image for fastboot. Unlike storage-mode LK,
+ * fastboot consumes raw kernel/ramdisk data and does not need MTK partition
+ * headers around the components. */
+static int prepare_fastboot_bootimg(const char *kernel_path,
+                                    const char *ramdisk_path,
+                                    const char *input_path,
+                                    uint32_t dram_base,
+                                    char *output_path,
+                                    size_t output_size,
+                                    int *owned) {
+    char empty_ramdisk_path[] = "/tmp/da-boot-fastboot-ramdisk-XXXXXX";
+    char bootimg_path[] = "/tmp/da-boot-fastboot-XXXXXX";
+    char cmd[1024];
+    const char *ramdisk_input = ramdisk_path;
+    int success = 0;
+
+    if (!output_path || output_size == 0 || !owned)
+        return -1;
+    output_path[0] = '\0';
+    *owned = 0;
+
+    if (input_path) {
+        if (snprintf(output_path, output_size, "%s", input_path) >=
+            (int)output_size)
+            return -1;
+        return 0;
+    }
+    if (!kernel_path)
+        return -1;
+
+    if (!ramdisk_input) {
+        if (create_temp_path(empty_ramdisk_path) != 0)
+            return -1;
+        ramdisk_input = empty_ramdisk_path;
+    }
+
+    if (create_temp_path(bootimg_path) != 0)
+        goto cleanup;
+
+    snprintf(cmd, sizeof(cmd),
+             "mkbootimg --kernel %s --ramdisk %s --base 0x%x "
+             "--kernel_offset 0x8000 --ramdisk_offset 0x4000000 "
+             "--pagesize 2048 -o %s",
+             kernel_path, ramdisk_input, dram_base, bootimg_path);
+    printf("Running: %s\n", cmd);
+    if (system(cmd) != 0)
+        goto cleanup;
+
+    if (snprintf(output_path, output_size, "%s", bootimg_path) >=
+        (int)output_size)
+        goto cleanup;
+
+    success = 1;
+    *owned = 1;
+
+cleanup:
+    if (!ramdisk_path)
+        unlink(empty_ramdisk_path);
+    if (!success)
+        unlink(bootimg_path);
+    return success ? 0 : -1;
+}
+
+static int run_host_fastboot_boot(const char *bootimg_path) {
+    pid_t pid;
+    int status;
+
+    pid = fork();
+    if (pid < 0)
+        return -1;
+    if (pid == 0) {
+        execlp("fastboot", "fastboot", "boot", bootimg_path,
+               (char *)NULL);
+        _exit(127);
+    }
+
+    if (waitpid(pid, &status, 0) < 0)
+        return -1;
+    if (WIFEXITED(status) && WEXITSTATUS(status) == 0)
+        return 0;
+
+    if (WIFSIGNALED(status)) {
+        fprintf(stderr, "fastboot terminated by signal %d\n",
+                WTERMSIG(status));
+    } else if (WIFEXITED(status)) {
+        fprintf(stderr, "fastboot exited with status %d\n",
+                WEXITSTATUS(status));
+    }
+    return -1;
 }
 
 /*
@@ -336,21 +439,24 @@ int run_lk_mode(serial_t *s, const soc_info_t *soc, const char *payload_path,
 
     const uint8_t *lk_code = lk_data + lk_content_offset;
 
-    uint32_t mt_part_generic_read, mt_part_get_partition;
-    if (extract_mt_part_generic_read(lk_code, lk_content_size, lk_base,
-                                      &mt_part_generic_read) != 0) {
-        fprintf(stderr, "Failed to extract mt_part_generic_read\n");
-        free(lk_data);
-        return -1;
+    uint32_t mt_part_generic_read = 0;
+    uint32_t mt_part_get_partition = 0;
+    if (lk_mode != LK_BOOT_FASTBOOT) {
+        if (extract_mt_part_generic_read(lk_code, lk_content_size, lk_base,
+                                          &mt_part_generic_read) != 0) {
+            fprintf(stderr, "Failed to extract mt_part_generic_read\n");
+            free(lk_data);
+            return -1;
+        }
+        if (extract_mt_part_get_partition(lk_code, lk_content_size, lk_base,
+                                           &mt_part_get_partition) != 0) {
+            fprintf(stderr, "Failed to extract mt_part_get_partition\n");
+            free(lk_data);
+            return -1;
+        }
+        printf("mt_part_generic_read: 0x%x\n", mt_part_generic_read);
+        printf("mt_part_get_partition: 0x%x\n", mt_part_get_partition);
     }
-    if (extract_mt_part_get_partition(lk_code, lk_content_size, lk_base,
-                                      &mt_part_get_partition) != 0) {
-        fprintf(stderr, "Failed to extract mt_part_get_partition\n");
-        free(lk_data);
-        return -1;
-    }
-    printf("mt_part_generic_read: 0x%x\n", mt_part_generic_read);
-    printf("mt_part_get_partition: 0x%x\n", mt_part_get_partition);
     printf("LK partition: %s (%u bytes)\n", partition_name, lk_content_size);
 
     // ペイロード読み込みと注入
@@ -419,17 +525,134 @@ int run_lk_mode(serial_t *s, const soc_info_t *soc, const char *payload_path,
         return -1;
     }
 
+    const uint32_t boot_arg_addr = soc->boot_arg_addr;
+    const uint32_t boot_arg_size = sizeof(boot_arg_t);
+    const char *input_path = input_count ? inputs[0].path : NULL;
+
+    if (lk_mode == LK_BOOT_FASTBOOT) {
+        char fastboot_bootimg_path[1024];
+        int fastboot_bootimg_owned = 0;
+        lk_runner_params_t lk_params;
+
+        if (lk_base != soc->lk_base_hint) {
+            fprintf(stderr,
+                    "LK fastboot hook requires LK at 0x%x (got 0x%x)\n",
+                    soc->lk_base_hint, lk_base);
+            free(payload);
+            free(lk_data);
+            return -1;
+        }
+
+        if (prepare_fastboot_bootimg(kernel_path, ramdisk_path, input_path,
+                                     soc->dram_base, fastboot_bootimg_path,
+                                     sizeof(fastboot_bootimg_path),
+                                     &fastboot_bootimg_owned) != 0) {
+            fprintf(stderr, "Failed to prepare fastboot boot image\n");
+            free(payload);
+            free(lk_data);
+            return -1;
+        }
+
+        memset(&lk_params, 0, sizeof(lk_params));
+        lk_params.ptr_fastboot_init =
+            lk_base + MT6589_LK_FASTBOOT_INIT_OFFSET;
+        lk_params.ptr_fastboot_register =
+            lk_base + MT6589_LK_FASTBOOT_REGISTER_OFFSET;
+        lk_params.ptr_fastboot_okay =
+            lk_base + MT6589_LK_FASTBOOT_OKAY_OFFSET;
+        lk_params.ptr_fastboot_fail =
+            lk_base + MT6589_LK_FASTBOOT_FAIL_OFFSET;
+        lk_params.ptr_udc_stop = lk_base + MT6589_LK_UDC_STOP_OFFSET;
+        lk_params.ptr_mtk_wdt_init =
+            lk_base + MT6589_LK_MTK_WDT_INIT_OFFSET;
+        lk_params.ptr_boot_linux =
+            lk_base + MT6589_LK_BOOT_LINUX_OFFSET;
+        lk_params.boot_mode_addr =
+            lk_base + MT6589_LK_BOOT_MODE_OFFSET;
+        lk_params.machtype = MT6589_LK_MACHTYPE;
+
+        message_init_set_params_lk(&msg, &lk_params);
+        if (protocol_send_message(&proto, &msg) != 0 ||
+            protocol_read_response(&proto, &resp) != 0 ||
+            resp.type != RESP_ACK) {
+            fprintf(stderr, "Failed to set LK fastboot parameters\n");
+            if (fastboot_bootimg_owned) unlink(fastboot_bootimg_path);
+            free(payload);
+            free(lk_data);
+            return -1;
+        }
+
+        /* The payload allocator owns a 1 MiB range, so reserve the fixed
+         * boot argument buffer before creating the hook trampoline. */
+        message_init_blacklist(&msg, boot_arg_addr,
+                               boot_arg_addr + boot_arg_size);
+        if (protocol_send_message(&proto, &msg) != 0 ||
+            protocol_read_response(&proto, &resp) != 0 ||
+            resp.type != RESP_ACK) {
+            fprintf(stderr, "Failed to reserve boot arg range\n");
+            if (fastboot_bootimg_owned) unlink(fastboot_bootimg_path);
+            free(payload);
+            free(lk_data);
+            return -1;
+        }
+
+        message_init_hook(&msg, HOOK_FASTBOOT_INIT);
+        if (protocol_send_message(&proto, &msg) != 0 ||
+            protocol_read_response(&proto, &resp) != 0 ||
+            resp.type != RESP_ACK) {
+            fprintf(stderr, "Failed to install fastboot_init hook\n");
+            if (fastboot_bootimg_owned) unlink(fastboot_bootimg_path);
+            free(payload);
+            free(lk_data);
+            return -1;
+        }
+
+        boot_arg_t boot_arg;
+        boot_arg_init(&boot_arg, dram_size_per_rank, dram_ranks, lk_mode);
+        printf("Uploading boot arg to 0x%x...\n", boot_arg_addr);
+        if (upload_buffer(&proto, s, boot_arg_addr,
+                          (const uint8_t *)&boot_arg, boot_arg_size,
+                          "boot argument") != 0) {
+            if (fastboot_bootimg_owned) unlink(fastboot_bootimg_path);
+            free(payload);
+            free(lk_data);
+            return -1;
+        }
+
+        printf("Jumping to LK at 0x%x with boot arg at 0x%x\n",
+               lk_base, boot_arg_addr);
+        message_init_jump(&msg, lk_base, boot_arg_addr, boot_arg_size, 1, 1);
+        if (protocol_send_message(&proto, &msg) != 0) {
+            fprintf(stderr, "Failed to send final LK jump request\n");
+            if (fastboot_bootimg_owned) unlink(fastboot_bootimg_path);
+            free(payload);
+            free(lk_data);
+            return -1;
+        }
+        if (protocol_read_response(&proto, &resp) == 0 && resp.type == RESP_NACK) {
+            fprintf(stderr, "LK jump rejected: err=%u\n", resp.err);
+            if (fastboot_bootimg_owned) unlink(fastboot_bootimg_path);
+            free(payload);
+            free(lk_data);
+            return -1;
+        }
+
+        free(lk_data);
+        free(payload);
+        serial_close(s);
+
+        int ret = run_host_fastboot_boot(fastboot_bootimg_path);
+        if (fastboot_bootimg_owned)
+            unlink(fastboot_bootimg_path);
+        return ret;
+    }
+
     // boot.img準備とアップロード
     uint32_t bootimg_addr = 0;
     uint32_t bootimg_size = 0;
     uint8_t *bootimg_data = NULL;
     uint32_t kernel_size = 0;
     uint32_t ramdisk_size = 0;
-    const uint32_t boot_arg_addr = soc->boot_arg_addr;
-    const uint32_t boot_arg_size = sizeof(boot_arg_t);
-
-    const char *input_path = input_count ? inputs[0].path : NULL;
-
     if (kernel_path) {
         char kernel_mtk_path[] = "/tmp/da-boot-kernel-XXXXXX";
         char ramdisk_mtk_path[] = "/tmp/da-boot-rootfs-XXXXXX";
@@ -636,6 +859,7 @@ int run_lk_mode(serial_t *s, const soc_info_t *soc, const char *payload_path,
 
     // LKパラメータ設定
     lk_runner_params_t lk_params;
+    memset(&lk_params, 0, sizeof(lk_params));
     lk_params.ptr_mt_part_generic_read = mt_part_generic_read | 1; // Thumb
     lk_params.ptr_mt_part_get_partition = mt_part_get_partition | 1;
     lk_params.bootimg_scratch_addr = bootimg_addr;
