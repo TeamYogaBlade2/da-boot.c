@@ -239,12 +239,14 @@ static void fastboot_boot_handler(const char *arg, void *data, unsigned sz) {
                                    hdr.ramdisk_size, &ramdisk_copy_size) != 0)
         return fastboot_boot_fail("invalid ramdisk image");
 
+    /* Match stock MT6589 cmd_boot(): the destination can overlap the
+     * fastboot download buffer, so use overlap-safe copies. */
     if (hdr.kernel_size && kernel_copy_size)
-        memcpy((void *)(uintptr_t)hdr.kernel_addr,
-               kernel_src, kernel_copy_size);
+        memmove((void *)(uintptr_t)hdr.kernel_addr,
+                kernel_src, kernel_copy_size);
     if (hdr.ramdisk_size && ramdisk_copy_size)
-        memcpy((void *)(uintptr_t)hdr.ramdisk_addr,
-               ramdisk_src, ramdisk_copy_size);
+        memmove((void *)(uintptr_t)hdr.ramdisk_addr,
+                ramdisk_src, ramdisk_copy_size);
 
     /*
      * boot_linux() appends LK-specific parameters to cmdline with

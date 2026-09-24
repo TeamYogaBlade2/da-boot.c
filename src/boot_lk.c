@@ -37,6 +37,22 @@
 #define MT6589_LK_BOOT_MODE_OFFSET         0x44418u
 #define MT6589_LK_MACHTYPE                 0x19bdu
 
+/*
+ * Keep the resident DA out of all fixed low-memory addresses used by the
+ * MT6589 KitKat fastboot/LK path:
+ *   0x80008000  kernel
+ *   0x84000000  ramdisk
+ *   0x85000000  fastboot download scratch
+ *   0x81e00000  LK
+ *   0x800a0000  boot argument
+ *
+ * The payload is initially staged at 0x80001000. Without this reservation
+ * its relocation logic deliberately leaves the payload there because the
+ * first free range overlaps the running image. A later fastboot boot then
+ * overwrites part of the resident DA with the kernel/ramdisk.
+ */
+#define MT6589_FASTBOOT_PAYLOAD_MIN_ADDR  0x88000000u
+
 typedef struct __attribute__((packed)) {
     uint32_t magic;
     uint32_t data_size;
@@ -316,6 +332,22 @@ static int flush_cache_range(protocol_t *proto, uint32_t addr, uint32_t size,
     return 0;
 }
 
+static int reserve_payload_range(payload_params_t *params,
+                                 uint32_t start, uint32_t end) {
+    if (!params || start >= end)
+        return -1;
+
+    for (int i = 0; i < MAX_BLACKLIST; i++) {
+        if (params->blacklist[i].mode == BLACKLIST_NONE) {
+            params->blacklist[i].range.start = start;
+            params->blacklist[i].range.end = end;
+            params->blacklist[i].mode = BLACKLIST_DL;
+            return 0;
+        }
+    }
+    return -1;
+}
+
 // boot_arg構造体 (MT6589)
 typedef struct {
     uint32_t magic;
@@ -472,6 +504,36 @@ int run_lk_mode(serial_t *s, const soc_info_t *soc, const char *payload_path,
     payload_params_init(&params, soc->dram_base,
                         soc->dram_base + (uint32_t)dram_size,
                         ptr_dl, ptr_ul, SOC_MT6589);
+
+    if (lk_mode == LK_BOOT_FASTBOOT) {
+        uint64_t dram_end = (uint64_t)soc->dram_base + dram_size;
+
+        if ((uint64_t)MT6589_FASTBOOT_PAYLOAD_MIN_ADDR > dram_end) {
+            fprintf(stderr,
+                    "Insufficient DRAM for the MT6589 fastboot payload relocation "
+                    "(need >= 0x%x)\n",
+                    MT6589_FASTBOOT_PAYLOAD_MIN_ADDR);
+            free(payload);
+            free(pl_data);
+            free(lk_data);
+            return -1;
+        }
+
+        if (reserve_payload_range(&params, soc->dram_base,
+                                  MT6589_FASTBOOT_PAYLOAD_MIN_ADDR) != 0) {
+            fprintf(stderr, "Failed to reserve fastboot payload range\n");
+            free(payload);
+            free(pl_data);
+            free(lk_data);
+            return -1;
+        }
+
+        printf("Reserving 0x%x-0x%x for fastboot fixed addresses; "
+               "DA will relocate above 0x%x\n",
+               soc->dram_base, MT6589_FASTBOOT_PAYLOAD_MIN_ADDR,
+               MT6589_FASTBOOT_PAYLOAD_MIN_ADDR);
+    }
+
     if (inject_params(payload, payload_size, &params) != 0) {
         fprintf(stderr, "Payload does not contain a parameter marker\n");
         free(payload);
