@@ -33,7 +33,8 @@
 #define MT6589_LK_UDC_STOP_OFFSET          0x0e0b8u
 #define MT6589_LK_MTK_WDT_INIT_OFFSET      0x15718u
 #define MT6589_LK_BOOT_LINUX_OFFSET        0x1e3bcu
-#define MT6589_LK_BOOT_MODE_OFFSET         0x4d1c4u
+#define MT6589_LK_MT_BOOT_INIT_OFFSET      0x1e9c8u
+#define MT6589_LK_BOOT_MODE_OFFSET         0x44418u
 #define MT6589_LK_MACHTYPE                 0x19bdu
 
 typedef struct __attribute__((packed)) {
@@ -554,6 +555,8 @@ int run_lk_mode(serial_t *s, const soc_info_t *soc, const char *payload_path,
         }
 
         memset(&lk_params, 0, sizeof(lk_params));
+        lk_params.ptr_mt_boot_init =
+            lk_base + MT6589_LK_MT_BOOT_INIT_OFFSET;
         lk_params.ptr_fastboot_init =
             lk_base + MT6589_LK_FASTBOOT_INIT_OFFSET;
         lk_params.ptr_fastboot_register =
@@ -576,6 +579,40 @@ int run_lk_mode(serial_t *s, const soc_info_t *soc, const char *payload_path,
             protocol_read_response(&proto, &resp) != 0 ||
             resp.type != RESP_ACK) {
             fprintf(stderr, "Failed to set LK fastboot parameters\n");
+            if (fastboot_bootimg_owned) unlink(fastboot_bootimg_path);
+            free(payload);
+            free(lk_data);
+            return -1;
+        }
+
+        /*
+         * Unlike the normal LK path, fastboot mode used to jump straight
+         * into the address where LK was supposed to live without actually
+         * uploading the LK image.  That left the hook targets pointing at
+         * whatever happened to be in RAM.  Upload the exact LK payload and
+         * make the instruction cache coherent before installing hooks.
+         */
+        printf("Uploading LK to 0x%x...\n", lk_base);
+        if (upload_buffer(&proto, s, lk_base, lk_code, lk_content_size, "LK") != 0) {
+            fprintf(stderr, "Failed to upload LK\n");
+            if (fastboot_bootimg_owned) unlink(fastboot_bootimg_path);
+            free(payload);
+            free(lk_data);
+            return -1;
+        }
+        if (flush_cache_range(&proto, lk_base, lk_content_size, "LK") != 0) {
+            if (fastboot_bootimg_owned) unlink(fastboot_bootimg_path);
+            free(payload);
+            free(lk_data);
+            return -1;
+        }
+
+        message_init_blacklist(&msg, lk_base,
+                               lk_base + lk_content_size);
+        if (protocol_send_message(&proto, &msg) != 0 ||
+            protocol_read_response(&proto, &resp) != 0 ||
+            resp.type != RESP_ACK) {
+            fprintf(stderr, "Failed to reserve LK range\n");
             if (fastboot_bootimg_owned) unlink(fastboot_bootimg_path);
             free(payload);
             free(lk_data);

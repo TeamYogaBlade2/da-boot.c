@@ -43,6 +43,7 @@ typedef struct {
     uint32_t ptr_mt_part_get_partition;
     uint32_t bootimg_scratch_addr;
     uint32_t bootimg_scratch_size;
+    uint32_t ptr_mt_boot_init;
     uint32_t ptr_fastboot_init;
     uint32_t ptr_fastboot_register;
     uint32_t ptr_fastboot_okay;

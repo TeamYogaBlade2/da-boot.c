@@ -96,6 +96,7 @@ typedef int (*lk_fastboot_init_t)(void *base, unsigned size);
 typedef void (*lk_fastboot_register_t)(const char *prefix,
                                         lk_fastboot_handler_t handler,
                                         unsigned char security_enabled);
+typedef void (*lk_mt_boot_init_t)(const void *app);
 typedef void (*lk_fastboot_ack_t)(const char *reason);
 typedef void (*lk_udc_stop_t)(void);
 typedef void (*lk_wdt_init_t)(void);
@@ -280,6 +281,32 @@ static int fastboot_init_hook(void *base, unsigned size) {
         (g_lk_params.ptr_fastboot_register | 1u);
     reg("boot", fastboot_boot_handler, 0);
     return 0;
+}
+
+/*
+ * The MT6589 LK keeps its real boot mode in a BSS global.  BOOT_ARGUMENT's
+ * boot_mode field is not copied to that global; boot_mode_select() normally
+ * changes it to FASTBOOT only after a hardware/RTC trigger.  Our injected
+ * BOOT_ARGUMENT therefore needs an explicit bridge into g_boot_mode.
+ *
+ * mt_boot_init() is called after crt0 has cleared BSS and immediately before
+ * it tests g_boot_mode to decide whether to enter fastboot_init().
+ */
+static void mt_boot_init_hook(const void *app) {
+    lk_mt_boot_init_t original;
+
+    if (!g_lk_params.ptr_mt_boot_init ||
+        !g_lk_params.boot_mode_addr)
+        for (;;) ;
+
+    *(volatile uint32_t *)(uintptr_t)g_lk_params.boot_mode_addr = 99u;
+
+    original = (lk_mt_boot_init_t)(uintptr_t)
+        interceptor_original(g_lk_params.ptr_mt_boot_init);
+    if (!original)
+        for (;;) ;
+
+    original(app);
 }
 
 uint32_t mt_part_generic_read_hook(void *dev, uint32_t read_cb,
@@ -579,6 +606,18 @@ static void handle_message(protocol_t *proto, message_t *msg) {
         }
         case MSG_HOOK:
             if (msg->hook == HOOK_FASTBOOT_INIT && g_has_lk_params) {
+                uart_print("Installing mt_boot_init hook at 0x");
+                uart_print_hex(g_lk_params.ptr_mt_boot_init | 1u);
+                uart_print("\n");
+                if (interceptor_replace(g_lk_params.ptr_mt_boot_init | 1,
+                                         (void*)mt_boot_init_hook) != 0) {
+                    uart_print("mt_boot_init hook failed\n");
+                    resp.type = RESP_NACK;
+                    resp.err = PROTO_ERR_NOT_SUPPORTED;
+                    break;
+                }
+                uart_print("mt_boot_init hook installed\n");
+
                 uart_print("Installing fastboot_init hook at 0x");
                 uart_print_hex(g_lk_params.ptr_fastboot_init | 1u);
                 uart_print("\n");
