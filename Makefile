@@ -1,5 +1,5 @@
 CC = clang
-CFLAGS = -Wall -Wextra -O2 -Iinclude -MMD -MP
+CFLAGS = -Wall -Wextra -O2 -Iinclude -Icommon -MMD -MP
 LDFLAGS = -lcapstone
 
 SRCS = src/main.c src/serial.c src/mtk_protocol.c src/da_protocol.c \

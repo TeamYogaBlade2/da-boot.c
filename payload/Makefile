@@ -16,6 +16,7 @@ CFLAGS = --target=$(TARGET_TRIPLE) \
          -ffunction-sections \
          -fdata-sections \
          -I. \
+         -I../common \
          -MMD -MP
 
 LDFLAGS = --target=$(TARGET_TRIPLE) \
