@@ -62,7 +62,16 @@ int run_preloader_mode(serial_t *s, const soc_info_t *soc, const char *payload_p
 
     // PayloadParams初期化
     payload_params_t params;
-    payload_params_init(&params, soc->dram_base, soc->dram_base + 0x40000000,
+    /*
+     * Preloader mode has no DRAM-size CLI yet.  Keep the allocator range
+     * bounded to the 512 MiB configuration used by upstream da-boot rather
+     * than exposing memory past the end of a 512 MiB device.
+     *
+     * TODO: derive the actual DRAM rank sizes from the device/preloader and
+     * support asymmetric ranks instead of assuming a single 512 MiB range.
+     */
+    payload_params_init(&params, soc->dram_base,
+                        soc->dram_base + 0x20000000u,
                         ptr_dl, ptr_ul, payload_soc_type(soc));
 
     // Preloader runner params

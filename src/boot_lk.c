@@ -275,6 +275,16 @@ int run_lk_mode(serial_t *s, const soc_info_t *soc, const char *payload_path,
         fprintf(stderr, "DRAM size and ranks required for LK mode\n");
         return -1;
     }
+    /*
+     * TODO: support asymmetric DRAM ranks.  The current BOOT_ARGUMENT
+     * interface stores one size per rank, but the CLI still supplies a
+     * single size which is replicated to every rank.
+     */
+    uint64_t dram_size = (uint64_t)dram_size_per_rank * dram_ranks;
+    if (dram_size > UINT32_MAX - soc->dram_base) {
+        fprintf(stderr, "DRAM range overflows 32-bit address space\n");
+        return -1;
+    }
     if (input_count > 1) {
         fprintf(stderr, "LK mode accepts at most one input\n");
         return -1;
@@ -352,7 +362,8 @@ int run_lk_mode(serial_t *s, const soc_info_t *soc, const char *payload_path,
         return -1;
     }
     payload_params_t params;
-    payload_params_init(&params, soc->dram_base, soc->dram_base + 0x40000000,
+    payload_params_init(&params, soc->dram_base,
+                        soc->dram_base + (uint32_t)dram_size,
                         ptr_dl, ptr_ul, SOC_MT6589);
     if (inject_params(payload, payload_size, &params) != 0) {
         fprintf(stderr, "Payload does not contain a parameter marker\n");
