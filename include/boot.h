@@ -24,6 +24,17 @@ typedef enum {
     LK_BOOT_DOWNLOAD = 100,
 } lk_boot_mode_t;
 
+typedef enum {
+    BR_POWER_KEY = 0,
+    BR_USB,
+    BR_RTC,
+    BR_WDT,
+    BR_WDT_BY_PASS_PWK,
+    BR_TOOL_BY_PASS_PWK,
+    BR_2SEC_REBOOT,
+    BR_UNKNOWN
+} boot_reason_t;
+
 int run_preloader_mode(serial_t *s, const struct soc_info *soc,
                        const char *payload_path, const char *preloader_path,
                        const upload_file_t *inputs, size_t input_count,
