@@ -50,7 +50,7 @@ typedef struct {
     uint32_t ptr_udc_stop;
     uint32_t ptr_mtk_wdt_disable;
     uint32_t ptr_mtk_wdt_init;
-    uint32_t ptr_boot_linux;
+    uint32_t ptr_boot_linux_from_storage;
     uint32_t boot_mode_addr;
     uint32_t machtype;
 } lk_runner_params_t;
@@ -59,5 +59,7 @@ _Static_assert(sizeof(lk_runner_params_t) == 60,
                "lk_runner_params_t must remain a 60-byte wire payload");
 
 #define LK_PARAMS_WIRE_SIZE (2u + sizeof(lk_runner_params_t))
+
+#define MT6589_LK_BOOTIMG_READ_SLACK 0x1000u
 
 #endif // DA_COMMON_H

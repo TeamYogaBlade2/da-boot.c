@@ -6,6 +6,7 @@
 #include "cache.h"
 #include "interceptor.h"
 #include "usb.h"
+#include "common.h"
 
 // UART (MT6589: 0x11006000)
 #define UART0_BASE 0x11006000
@@ -129,106 +130,8 @@ typedef void (*lk_fastboot_ack_t)(const char *reason);
 typedef void (*lk_udc_stop_t)(void);
 typedef void (*lk_mtk_wdt_disable_t)(void);
 typedef void (*lk_wdt_init_t)(void);
-typedef void (*lk_boot_linux_t)(void *kernel, unsigned *tags,
-                                char *cmdline, unsigned machtype,
-                                void *ramdisk, unsigned ramdisk_size);
-typedef const char *(*lk_mt_disp_get_lcm_id_t)(void);
-typedef uint32_t (*lk_mt_disp_get_lcd_time_t)(void);
+typedef int (*lk_boot_linux_from_storage_t)(void);
 
-#define FASTBOOT_BOOT_MAGIC       "ANDROID!"
-#define FASTBOOT_BOOT_HDR_SIZE    0x260u
-#define FASTBOOT_MTK_HDR_SIZE     0x200u
-#define FASTBOOT_MTK_MAGIC        0x58881688u
-#define FASTBOOT_DEFAULT_CMDLINE  "console=tty0 console=ttyMT3,921600n1 root=/dev/ram"
-#define FASTBOOT_CMDLINE_SIZE     1024u
-
-/* Blade 10 KitKat LK display helpers, relative to lk_base = 0x81e00000. */
-#define MT6589_LK_BOOT_LINUX_OFFSET           0x1e3bcu
-#define MT6589_LK_MT_DISP_GET_LCM_ID_OFFSET   0x0e914u
-#define MT6589_LK_MT_DISP_GET_LCD_TIME_OFFSET 0x0e7ecu
-
-static int fastboot_cmdline_append(char *cmdline, size_t capacity,
-                                   size_t *length, const char *text) {
-    size_t n;
-
-    if (!cmdline || !length || !text || *length >= capacity)
-        return -1;
-
-    n = strlen(text);
-    if (n > capacity - *length - 1u)
-        return -1;
-
-    memcpy(cmdline + *length, text, n);
-    *length += n;
-    cmdline[*length] = '\0';
-    return 0;
-}
-
-static int fastboot_cmdline_append_u32(char *cmdline, size_t capacity,
-                                       size_t *length, uint32_t value) {
-    char digits[10];
-    size_t n = 0;
-    size_t i;
-
-    do {
-        digits[n++] = (char)('0' + value % 10u);
-        value /= 10u;
-    } while (value != 0 && n < sizeof(digits));
-
-    if (n > capacity - *length - 1u)
-        return -1;
-
-    for (i = 0; i < n; i++)
-        cmdline[*length + i] = digits[n - 1u - i];
-    *length += n;
-    cmdline[*length] = '\0';
-    return 0;
-}
-
-/*
- * Reproduce the display arguments that the stock MT6589 storage boot path
- * adds immediately before boot_linux():
- *
- *     lcm=%1d-%s
- *     fps=%1d
- *
- * The kernel uses lcm= to avoid the DSI auto-detection path.  Without it,
- * mtkfb_find_lcm_driver() calls DISP_SelectDevice(NULL), and the DSI path
- * enters init_dsi() before it knows which panel driver is selected.
- */
-static int fastboot_append_stock_display_cmdline(char *cmdline,
-                                                 size_t capacity) {
-    uintptr_t ptr_boot_linux = g_lk_params.ptr_boot_linux;
-    uint32_t lk_base;
-    const char *lcm_id;
-    uint32_t lcd_time;
-    size_t length;
-    lk_mt_disp_get_lcm_id_t get_lcm_id;
-    lk_mt_disp_get_lcd_time_t get_lcd_time;
-
-    if (ptr_boot_linux < MT6589_LK_BOOT_LINUX_OFFSET)
-        return -1;
-
-    lk_base = (uint32_t)(ptr_boot_linux - MT6589_LK_BOOT_LINUX_OFFSET);
-    get_lcm_id = (lk_mt_disp_get_lcm_id_t)(uintptr_t)
-        ((lk_base + MT6589_LK_MT_DISP_GET_LCM_ID_OFFSET) | 1u);
-    get_lcd_time = (lk_mt_disp_get_lcd_time_t)(uintptr_t)
-        ((lk_base + MT6589_LK_MT_DISP_GET_LCD_TIME_OFFSET) | 1u);
-
-    lcm_id = get_lcm_id();
-    if (!lcm_id || !*lcm_id)
-        return -1;
-    lcd_time = get_lcd_time();
-    length = strlen(cmdline);
-
-    if (fastboot_cmdline_append(cmdline, capacity, &length, " lcm=1-") != 0 ||
-        fastboot_cmdline_append(cmdline, capacity, &length, lcm_id) != 0 ||
-        fastboot_cmdline_append(cmdline, capacity, &length, " fps=") != 0 ||
-        fastboot_cmdline_append_u32(cmdline, capacity, &length, lcd_time) != 0)
-        return -1;
-
-    return 0;
-}
 
 /*
  * Stock MT6589 LK re-enables the watchdog in cmd_boot(), but a custom
@@ -237,31 +140,6 @@ static int fastboot_append_stock_display_cmdline(char *cmdline,
  * set to 1 to retain stock behavior while debugging.
  */
 #define FASTBOOT_REENABLE_WDT      0
-
-typedef struct __attribute__((packed)) {
-    char magic[8];
-    uint32_t kernel_size;
-    uint32_t kernel_addr;
-    uint32_t ramdisk_size;
-    uint32_t ramdisk_addr;
-    uint32_t second_size;
-    uint32_t second_addr;
-    uint32_t tags_addr;
-    uint32_t page_size;
-    uint32_t unused[2];
-    char name[16];
-    char cmdline[512];
-    uint32_t id[8];
-} fastboot_boot_img_hdr_t;
-
-typedef struct __attribute__((packed)) {
-    uint32_t magic;
-    uint32_t size;
-    char name[32];
-} fastboot_mtk_hdr_t;
-
-_Static_assert(sizeof(fastboot_boot_img_hdr_t) == FASTBOOT_BOOT_HDR_SIZE,
-               "unexpected Android boot image header size");
 
 static void fastboot_boot_fail(const char *reason) {
     lk_fastboot_ack_t fail =
@@ -302,145 +180,29 @@ static void fastboot_disable_watchdog(void) {
                  ::: "memory");
 }
 
-/* Accept both a normal Android boot image and MTK-wrapped kernel/rootfs data. */
-static int fastboot_resolve_component(const uint8_t **data, uint32_t *avail,
-                                      const char *expected_name,
-                                      uint32_t image_size,
-                                      uint32_t *copy_size) {
-    fastboot_mtk_hdr_t hdr;
-
-    if (!data || !*data || !avail || !expected_name || !copy_size)
-        return -1;
-
-    *copy_size = image_size;
-    if (*avail < FASTBOOT_MTK_HDR_SIZE)
-        return *copy_size <= *avail ? 0 : -1;
-
-    memcpy(&hdr, *data, sizeof(hdr));
-    if (hdr.magic != FASTBOOT_MTK_MAGIC ||
-        strncmp(hdr.name, expected_name, strlen(expected_name)) != 0)
-        return *copy_size <= *avail ? 0 : -1;
-
-    if (hdr.size > *avail - FASTBOOT_MTK_HDR_SIZE)
-        return -1;
-
-    /* mkbootimg() records either the raw size or raw+0x200 MTK header size. */
-    if (image_size == hdr.size + FASTBOOT_MTK_HDR_SIZE || image_size == hdr.size) {
-        *data += FASTBOOT_MTK_HDR_SIZE;
-        *avail -= FASTBOOT_MTK_HDR_SIZE;
-        *copy_size = hdr.size;
-    } else {
-        return -1;
-    }
-
-    return *copy_size <= *avail ? 0 : -1;
-}
-
 static void fastboot_boot_handler(const char *arg, void *data, unsigned sz) {
-    fastboot_boot_img_hdr_t hdr;
-    uint32_t hdr_off = 0;
-    uint32_t kernel_actual;
-    uint32_t ramdisk_actual;
-    const uint8_t *kernel_src;
-    const uint8_t *ramdisk_src;
-    uint32_t kernel_avail;
-    uint32_t ramdisk_avail;
-    uint32_t kernel_copy_size;
-    uint32_t ramdisk_copy_size;
-    uint64_t kernel_off;
-    uint64_t ramdisk_off;
-    static char boot_cmdline[FASTBOOT_CMDLINE_SIZE];
+    lk_boot_linux_from_storage_t boot_linux_from_storage;
 
     (void)arg;
 
-    if (!data || sz < sizeof(hdr))
-        return fastboot_boot_fail("invalid bootimage header");
-
-    memcpy(&hdr, data, sizeof(hdr));
-    hdr.cmdline[sizeof(hdr.cmdline) - 1] = '\0';
-    if (memcmp(hdr.magic, FASTBOOT_BOOT_MAGIC, sizeof(hdr.magic)) != 0) {
-        if (sz < FASTBOOT_MTK_HDR_SIZE + sizeof(hdr))
-            return fastboot_boot_fail("invalid bootimage header");
-        hdr_off = FASTBOOT_MTK_HDR_SIZE;
-        memcpy(&hdr, (const uint8_t *)data + hdr_off, sizeof(hdr));
-        hdr.cmdline[sizeof(hdr.cmdline) - 1] = '\0';
-        if (memcmp(hdr.magic, FASTBOOT_BOOT_MAGIC, sizeof(hdr.magic)) != 0)
-            return fastboot_boot_fail("invalid bootimage header");
-    }
-
-    if (!hdr.page_size || (hdr.page_size & (hdr.page_size - 1u)) != 0)
-        return fastboot_boot_fail("invalid page size");
-    if (hdr.kernel_size > UINT32_MAX - (hdr.page_size - 1u) ||
-        hdr.ramdisk_size > UINT32_MAX - (hdr.page_size - 1u))
-        return fastboot_boot_fail("bootimage too large");
-
-    kernel_actual = (hdr.kernel_size + hdr.page_size - 1u) &
-                    ~(hdr.page_size - 1u);
-    ramdisk_actual = (hdr.ramdisk_size + hdr.page_size - 1u) &
-                     ~(hdr.page_size - 1u);
-
-    kernel_off = (uint64_t)hdr_off + hdr.page_size;
-    ramdisk_off = kernel_off + kernel_actual;
-
-    if (kernel_off > sz || kernel_actual > sz - kernel_off ||
-        ramdisk_off > sz || ramdisk_actual > sz - ramdisk_off)
-        return fastboot_boot_fail("incomplete bootimage");
-
-    kernel_src = (const uint8_t *)data + (uint32_t)kernel_off;
-    kernel_avail = (uint32_t)((uint64_t)sz - kernel_off);
-    if (fastboot_resolve_component(&kernel_src, &kernel_avail, "KERNEL",
-                                   hdr.kernel_size, &kernel_copy_size) != 0)
-        return fastboot_boot_fail("invalid kernel image");
-
-    ramdisk_src = (const uint8_t *)data + (uint32_t)ramdisk_off;
-    ramdisk_avail = (uint32_t)((uint64_t)sz - ramdisk_off);
-    if (fastboot_resolve_component(&ramdisk_src, &ramdisk_avail, "ROOTFS",
-                                   hdr.ramdisk_size, &ramdisk_copy_size) != 0)
-        return fastboot_boot_fail("invalid ramdisk image");
-
-    /* Match stock MT6589 cmd_boot(): the destination can overlap the
-     * fastboot download buffer, so use overlap-safe copies. */
-    if (hdr.kernel_size && kernel_copy_size)
-        memmove((void *)(uintptr_t)hdr.kernel_addr,
-                kernel_src, kernel_copy_size);
-    if (hdr.ramdisk_size && ramdisk_copy_size)
-        memmove((void *)(uintptr_t)hdr.ramdisk_addr,
-                ramdisk_src, ramdisk_copy_size);
+    if (!data || !sz)
+        return fastboot_boot_fail("invalid bootimage");
+    if (!g_lk_params.ptr_mt_part_generic_read ||
+        !g_lk_params.ptr_mt_part_get_partition ||
+        !g_lk_params.ptr_boot_linux_from_storage ||
+        !g_lk_params.ptr_fastboot_okay ||
+        !g_lk_params.ptr_udc_stop ||
+        !g_lk_params.ptr_fastboot_fail)
+        return fastboot_boot_fail("LK storage boot path unavailable");
 
     /*
-     * boot_linux() appends LK-specific parameters to cmdline with
-     * sprintf(cmdline, "%s ...", cmdline, ...).  The storage boot path
-     * passes its separate g_CMDLINE buffer, not the boot-image header
-     * itself.  Keep the same separation here.
+     * Make the fastboot download buffer look exactly like the BOOTIMG
+     * partition to the stock storage loader.  It will read the Android boot
+     * image header, compute g_bimg_sz, then feed the KERNEL/ROOTFS MTK
+     * wrappers to boot_linux_from_storage().
      */
-    {
-        const char *image_cmdline = hdr.cmdline;
-        size_t image_len = strlen(image_cmdline);
-        const char *cmdline = image_len
-            ? image_cmdline
-            : FASTBOOT_DEFAULT_CMDLINE;
-        size_t cmdline_len = strlen(cmdline);
-
-        /*
-         * The stock MT6589 LK initializes g_CMDLINE from
-         * COMMANDLINE_TO_KERNEL. mboot_android_load_bootimg() does not
-         * replace it with boot_hdr.cmdline, so an ordinary stock boot uses
-         * the default cmdline even when the image header is empty.
-         */
-        if (cmdline_len >= sizeof(boot_cmdline))
-            return fastboot_boot_fail("boot command line too long");
-
-        memcpy(boot_cmdline, cmdline, cmdline_len);
-        boot_cmdline[cmdline_len] = '\0';
-    }
-
-    /*
-     * This is required for the downstream MTK display driver.  The stock
-     * storage boot path adds these arguments before calling boot_linux().
-     */
-    if (fastboot_append_stock_display_cmdline(boot_cmdline,
-                                              sizeof(boot_cmdline)) != 0)
-        return fastboot_boot_fail("LK LCM not available");
+    g_lk_params.bootimg_scratch_addr = (uint32_t)(uintptr_t)data;
+    g_lk_params.bootimg_scratch_size = sz;
 
     ((lk_fastboot_ack_t)(uintptr_t)(g_lk_params.ptr_fastboot_okay | 1u))("");
     ((lk_udc_stop_t)(uintptr_t)(g_lk_params.ptr_udc_stop | 1u))();
@@ -453,16 +215,13 @@ static void fastboot_boot_handler(const char *arg, void *data, unsigned sz) {
     fastboot_mask_interrupts();
     fastboot_disable_watchdog();
 
-    /* Match the stock cmd_boot() order: WDT setup precedes mode reset. */
+    /* Match stock cmd_boot(): enter NORMAL_BOOT before boot_linux_from_storage(). */
     ((volatile uint32_t *)(uintptr_t)g_lk_params.boot_mode_addr)[0] = 0;
 
-    ((lk_boot_linux_t)(uintptr_t)(g_lk_params.ptr_boot_linux | 1u))(
-        (void *)(uintptr_t)hdr.kernel_addr,
-        (unsigned *)(uintptr_t)hdr.tags_addr,
-        boot_cmdline,
-        g_lk_params.machtype,
-        (void *)(uintptr_t)hdr.ramdisk_addr,
-        hdr.ramdisk_size);
+    boot_linux_from_storage =
+        (lk_boot_linux_from_storage_t)(uintptr_t)
+        (g_lk_params.ptr_boot_linux_from_storage | 1u);
+    (void)boot_linux_from_storage();
 
     for (;;)
         ;
@@ -992,8 +751,10 @@ uint32_t mt_part_generic_read_hook(void *dev, uint32_t read_cb,
              * the boot-image header. Let kernel/ramdisk reads hit it too. */
             if (delta64 < g_lk_params.bootimg_scratch_size) {
                 uint32_t delta = (uint32_t)delta64;
+                uint32_t available =
+                    g_lk_params.bootimg_scratch_size - delta;
 
-                if (size <= g_lk_params.bootimg_scratch_size - delta) {
+                if (size <= available) {
                     uart_print("[mt_part_generic_read] replacing boot.img"
                                " delta=0x");
                     uart_print_hex(delta);
@@ -1003,6 +764,26 @@ uint32_t mt_part_generic_read_hook(void *dev, uint32_t read_cb,
                     memcpy(dst,
                            (void*)(g_lk_params.bootimg_scratch_addr + delta),
                            size);
+                    return size;
+                }
+
+                /*
+                 * Stock mboot_android_load_bootimg() asks for a read window
+                 * slightly larger than mkbootimg's output.  Normal mode
+                 * pre-pads that window on the host; fastboot's download
+                 * buffer cannot be extended in-place, so synthesize the
+                 * zero-filled tail here.
+                 */
+                if (size > available &&
+                    size - available <= MT6589_LK_BOOTIMG_READ_SLACK) {
+                    uart_print("[mt_part_generic_read] replacing boot.img"
+                               " with zero tail\n");
+                    if (available)
+                        memcpy(dst,
+                               (void *)(g_lk_params.bootimg_scratch_addr +
+                                        delta),
+                               available);
+                    memset(dst + available, 0, size - available);
                     return size;
                 }
             }

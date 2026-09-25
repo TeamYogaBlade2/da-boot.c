@@ -1428,6 +1428,22 @@ int extract_mt_part_get_partition(const uint8_t *data, uint32_t size, uint32_t b
                                        "mt_part_get_partition", addr);
 }
 
+int extract_boot_linux_from_storage(const uint8_t *data, uint32_t size,
+                                    uint32_t base, uint32_t *addr)
+{
+    /*
+     * boot_linux_from_storage() is the only MT6589 LK function which passes
+     * the literal "Android Boot Image" to the image-load error helpers.
+     * Resolve the containing function from the actual LK image instead of
+     * depending on a fixed offset.
+     */
+    if (try_function_by_string_mode(data, size, base, 1,
+                                    "Android Boot Image", addr) == 0)
+        return 0;
+    return try_function_by_string_mode(data, size, base, 0,
+                                       "Android Boot Image", addr);
+}
+
 int extract_get_part(const uint8_t *data, uint32_t size, uint32_t base, uint32_t *addr)
 {
     if (try_function_by_string_mode(data, size, base, 1, "get_part", addr) == 0)
