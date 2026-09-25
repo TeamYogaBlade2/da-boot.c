@@ -670,6 +670,8 @@ static void handle_message(protocol_t *proto, message_t *msg) {
         }
         case MSG_HOOK:
             if (msg->hook == HOOK_FASTBOOT_INIT && g_has_lk_params) {
+                int mt_boot_hooked = 0;
+
                 uart_print("Installing mt_boot_init hook at 0x");
                 uart_print_hex(g_lk_params.ptr_mt_boot_init | 1u);
                 uart_print("\n");
@@ -680,6 +682,7 @@ static void handle_message(protocol_t *proto, message_t *msg) {
                     resp.err = PROTO_ERR_NOT_SUPPORTED;
                     break;
                 }
+                mt_boot_hooked = 1;
                 uart_print("mt_boot_init hook installed\n");
 
                 uart_print("Installing fastboot_init hook at 0x");
@@ -690,6 +693,8 @@ static void handle_message(protocol_t *proto, message_t *msg) {
                     uart_print("fastboot_init hook installed\n");
                     resp.type = RESP_ACK;
                 } else {
+                    if (mt_boot_hooked)
+                        interceptor_revert(g_lk_params.ptr_mt_boot_init | 1u);
                     uart_print("fastboot_init hook failed\n");
                     resp.type = RESP_NACK;
                     resp.err = PROTO_ERR_NOT_SUPPORTED;
