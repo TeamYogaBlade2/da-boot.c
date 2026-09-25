@@ -2,8 +2,8 @@
 #include <stdint.h>
 #include <stddef.h>
 
-typedef void (*usb_send_fn_t)(const uint8_t *buf, uint32_t len);
-typedef uint32_t (*usb_recv_fn_t)(uint8_t *buf, uint32_t len, uint32_t timeout);
+typedef int (*usb_send_fn_t)(const uint8_t *buf, uint32_t len);
+typedef int (*usb_recv_fn_t)(uint8_t *buf, uint32_t len, uint32_t timeout);
 
 // グローバル関数ポインタ
 static usb_send_fn_t g_usb_send = NULL;
@@ -16,14 +16,12 @@ void usb_init(uint32_t send_fn, uint32_t recv_fn) {
 
 int usb_send(const uint8_t *buf, uint32_t len) {
     if (!g_usb_send) return -1;
-    g_usb_send(buf, len);
-    return 0;
+    return g_usb_send(buf, len);
 }
 
 int usb_recv(uint8_t *buf, uint32_t len, uint32_t timeout) {
     if (!g_usb_recv) return -1;
-    (void)g_usb_recv(buf, len, timeout);
-    return 0;
+    return g_usb_recv(buf, len, timeout);
 }
 
 // エンディアン変換付き送受信
