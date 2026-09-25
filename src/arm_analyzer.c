@@ -1432,7 +1432,15 @@ static int string_at_va_is(const arm_analysis_t *a, uint32_t va,
     if (off > a->size || len > a->size - off)
         return 0;
 
-    return memcmp(a->data + off, value, len) == 0;
+    if (memcmp(a->data + off, value, len) != 0)
+        return 0;
+
+    /*
+     * Do not accept a prefix of a longer string.  This matters for the
+     * fastboot ACK wrappers because the LK also contains strings such as
+     * "FAILED" which are not the "FAIL" response string.
+     */
+    return off + len == a->size || a->data[off + len] == '\0';
 }
 
 static int try_most_called_target_by_string_mode(const uint8_t *data,
@@ -1537,43 +1545,66 @@ int extract_fastboot_register(const uint8_t *data, uint32_t size,
                                                  "fastboot_init()\n", addr);
 }
 
+static int ack_wrapper_matches(const arm_analysis_t *a, size_t idx,
+                               const char *code, uint32_t *ack_target);
+
 static int try_fastboot_fail_mode(const uint8_t *data, uint32_t size,
                                   uint32_t base, int thumb, uint32_t *addr)
 {
-    const char *pat = "unknown command";
-    const uint8_t *found = find_string(data, size, pat);
+    const char *pat = "FAIL";
+    const uint8_t *found;
     arm_analysis_t a;
     uint32_t str_va;
-    size_t ref;
-    size_t limit;
+    uint32_t search_off = 0;
+    uint32_t str_len = (uint32_t)strlen(pat);
 
-    if (!found || open_analysis(&a, data, size, base, thumb) != 0)
+    if (!str_len || str_len > size ||
+        open_analysis(&a, data, size, base, thumb) != 0)
         return -1;
 
-    str_va = base + (uint32_t)(found - data);
-    if (find_reference(&a, str_va, &ref) != 0) {
-        close_analysis(&a);
-        return -1;
-    }
+    /*
+     * "FAIL" also occurs inside unrelated strings such as "FAILED".
+     * Iterate over every occurrence and accept only the four-instruction
+     * fastboot ACK wrapper which actually materializes this string.
+     */
+    while (search_off <= size - str_len) {
+        size_t ref;
+        size_t search_start;
 
-    limit = ref + 8;
-    if (limit > a.count)
-        limit = a.count;
+        found = find_string_from(data, size, pat, search_off);
+        if (!found)
+            break;
 
-    /* cmd_loop() emits "unknown command" and immediately calls
-     * fastboot_fail().  Anchor on the string xref instead of a fixed offset. */
-    for (size_t i = ref; i < limit; i++) {
-        uint32_t target;
+        search_start = (size_t)(found - data);
+        search_off = (uint32_t)search_start + 1;
+        str_va = base + (uint32_t)search_start;
 
-        if (call_target(&a, 0, i, &target) != 0)
-            continue;
+        for (ref = 0; ref < a.count; ref++) {
+            size_t begin = ref > 3 ? ref - 3 : 0;
 
-        *addr = target;
-        fprintf(stderr,
-                "[analyzer] fastboot_fail: string=xref 0x%08x target=0x%08x\n",
-                (uint32_t)a.insn[ref].address, target);
-        close_analysis(&a);
-        return 0;
+            if (!instruction_refers_to(&a, &a.insn[ref], str_va))
+                continue;
+
+            /*
+             * instruction_refers_to() normally anchors on the ADD r0,pc,
+             * i.e. the third instruction of the wrapper.  Scan a few
+             * instructions backwards so the actual function entry is
+             * recovered rather than the xref instruction.
+             */
+            for (size_t i = begin; i <= ref; i++) {
+                uint32_t ack_target;
+
+                if (ack_wrapper_matches(&a, i, pat, &ack_target) != 0)
+                    continue;
+
+                *addr = (uint32_t)a.insn[i].address;
+                fprintf(stderr,
+                        "[analyzer] fastboot_fail: wrapper=0x%08x ack=0x%08x\n",
+                        *addr, ack_target);
+                close_analysis(&a);
+                return 0;
+            }
+        }
     }
 
     close_analysis(&a);
@@ -1676,13 +1707,13 @@ static int try_fastboot_okay_mode(const uint8_t *data, uint32_t size,
 
     /* fastboot_okay() is the sibling four-instruction wrapper which tail
      * branches to the same fastboot_ack() implementation, but supplies the
-     * literal "OKAY\n" instead of "FAIL\n". */
+     * literal "OKAY" instead of "FAIL". */
     for (size_t i = 0; i + 3 < a.count; i++) {
         uint32_t candidate_ack_target;
 
         if ((uint32_t)a.insn[i].address == fastboot_fail)
             continue;
-        if (ack_wrapper_matches(&a, i, "OKAY\n", &candidate_ack_target) != 0)
+        if (ack_wrapper_matches(&a, i, "OKAY", &candidate_ack_target) != 0)
             continue;
         if (candidate_ack_target != ack_target)
             continue;
