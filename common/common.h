@@ -55,4 +55,9 @@ typedef struct {
     uint32_t machtype;
 } lk_runner_params_t;
 
+_Static_assert(sizeof(lk_runner_params_t) == 60,
+               "lk_runner_params_t must remain a 60-byte wire payload");
+
+#define LK_PARAMS_WIRE_SIZE (2u + sizeof(lk_runner_params_t))
+
 #endif // DA_COMMON_H
