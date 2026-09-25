@@ -86,7 +86,7 @@ static int address_range_valid(uint32_t addr, uint32_t size) {
 
 static int download_range_allowed(const payload_params_t *params,
                                   uint32_t addr, uint32_t size) {
-    if (!params || !address_range_valid(addr, size))
+    if (!params)
         return 0;
 
     uint32_t end = addr + size;
@@ -625,10 +625,15 @@ static void handle_message(protocol_t *proto, message_t *msg) {
         case MSG_WRITE: {
             // データ受信
             uint32_t size = msg->write.size;
+            if (!address_range_valid(msg->write.addr, size)) {
+                resp.type = RESP_NACK;
+                resp.err = PROTO_ERR_INVALID_PARAMS;
+                break;
+            }
             if (!download_range_allowed(&g_params,
                                         msg->write.addr, size)) {
                 resp.type = RESP_NACK;
-                resp.err = PROTO_ERR_INVALID_PARAMS;
+                resp.err = PROTO_ERR_DOWNLOAD_FORBIDDEN;
                 break;
             }
 
