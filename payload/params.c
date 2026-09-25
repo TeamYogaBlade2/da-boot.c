@@ -53,6 +53,24 @@ int blacklist_dl(payload_params_t *p, uint32_t start, uint32_t end) {
         return -1;
 
     for (int i = 0; i < MAX_BLACKLIST; i++) {
+        /*
+         * A range may have been reserved from the allocator as
+         * BLACKLIST_RELOC before the host uploads data to it.  Once the
+         * upload is complete, promote that reservation to BLACKLIST_DL
+         * instead of consuming another blacklist slot.
+         */
+        if (p->blacklist[i].range.start == start &&
+            p->blacklist[i].range.end == end) {
+            if (p->blacklist[i].mode == BLACKLIST_DL)
+                return 0;
+            if (p->blacklist[i].mode == BLACKLIST_RELOC) {
+                p->blacklist[i].mode = BLACKLIST_DL;
+                return 0;
+            }
+        }
+    }
+
+    for (int i = 0; i < MAX_BLACKLIST; i++) {
         if (p->blacklist[i].mode == BLACKLIST_NONE) {
             p->blacklist[i].range.start = start;
             p->blacklist[i].range.end = end;

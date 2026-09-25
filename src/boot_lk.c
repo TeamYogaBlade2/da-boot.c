@@ -512,6 +512,31 @@ int run_lk_mode(serial_t *s, const soc_info_t *soc, const char *payload_path,
                         soc->dram_base + (uint32_t)dram_size,
                         ptr_dl, ptr_ul, SOC_MT6589);
 
+    const uint32_t boot_arg_addr = soc->boot_arg_addr;
+    const uint32_t boot_arg_size = sizeof(boot_arg_t);
+
+    /*
+     * The payload creates and blacklists its 1 MiB heap immediately after
+     * startup.  The MT6589 LK boot argument has a fixed address at
+     * 0x800a0000, so reserve that range before the payload is injected;
+     * otherwise the payload heap can consume it and MSG_WRITE will reject
+     * the later boot-argument upload.
+     *
+     * Fastboot mode already reserves the complete 0x80000000-0x88000000
+     * fixed-address area below, so it does not need a second reservation.
+     */
+    if (lk_mode != LK_BOOT_FASTBOOT) {
+        if (boot_arg_addr > UINT32_MAX - boot_arg_size ||
+            reserve_payload_range(&params,
+                                   boot_arg_addr,
+                                   boot_arg_addr + boot_arg_size) != 0) {
+            fprintf(stderr, "Failed to reserve boot arg range\n");
+            free(payload);
+            free(lk_data);
+            return -1;
+        }
+    }
+
     if (lk_mode == LK_BOOT_FASTBOOT) {
         uint64_t dram_end = (uint64_t)soc->dram_base + dram_size;
 
@@ -595,8 +620,6 @@ int run_lk_mode(serial_t *s, const soc_info_t *soc, const char *payload_path,
         return -1;
     }
 
-    const uint32_t boot_arg_addr = soc->boot_arg_addr;
-    const uint32_t boot_arg_size = sizeof(boot_arg_t);
     const char *input_path = input_count ? inputs[0].path : NULL;
 
     if (lk_mode == LK_BOOT_FASTBOOT) {
