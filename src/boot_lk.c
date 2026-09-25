@@ -667,7 +667,7 @@ int run_lk_mode(serial_t *s, const soc_info_t *soc, const char *payload_path,
             extract_fastboot_okay(lk_code, lk_content_size, lk_base,
                                   &fastboot_okay) != 0 ||
             extract_udc_stop(lk_code, lk_content_size, lk_base,
-                             &udc_stop) != 0 ||
+                             fastboot_okay, &udc_stop) != 0 ||
             extract_mtk_wdt_init(lk_code, lk_content_size, lk_base,
                                  &mtk_wdt_init) != 0 ||
             extract_mt_boot_init(lk_code, lk_content_size, lk_base,

@@ -1745,41 +1745,177 @@ int extract_fastboot_okay(const uint8_t *data, uint32_t size, uint32_t base,
                                   fastboot_fail, addr);
 }
 
+/*
+ * Decode one Thumb-2 direct BL/BLX at an arbitrary instruction boundary.
+ *
+ * open_analysis() intentionally performs a linear decode of the whole
+ * image, but LK mixes code and literal pools.  A valid data word can
+ * therefore make that linear stream lose synchronization and hide a real
+ * instruction sequence.  For small semantic anchors, decode individual
+ * instructions from their possible 2-byte boundaries instead.
+ */
+static int decode_thumb_call_target(const uint8_t *data, uint32_t size,
+                                    uint32_t base, uint32_t offset,
+                                    csh handle, uint32_t *target)
+{
+    cs_insn *insn = NULL;
+    size_t count;
+    uint32_t available;
+
+    if (!data || !target || offset > size || size - offset < 4)
+        return -1;
+
+    available = size - offset;
+    if (available > 4)
+        available = 4;
+
+    count = cs_disasm(handle, data + offset, available,
+                      base + offset, 1, &insn);
+    if (count != 1 || !insn ||
+        insn->size != 4 ||
+        !insn->detail ||
+        (insn->id != ARM_INS_BL && insn->id != ARM_INS_BLX) ||
+        insn->detail->arm.op_count < 1 ||
+        insn->detail->arm.operands[0].type != ARM_OP_IMM) {
+        if (insn)
+            cs_free(insn, count);
+        return -1;
+    }
+
+    *target = (uint32_t)insn->detail->arm.operands[0].imm;
+    cs_free(insn, count);
+    return 0;
+}
+
+/*
+ * Find:
+ *
+ *     BL fastboot_okay
+ *     BL <candidate>
+ *     BL mtk_wdt_init
+ *
+ * directly in the raw Thumb stream.
+ *
+ * This is deliberately stronger than looking for a lone BL immediately
+ * before mtk_wdt_init: the latter has unrelated callers elsewhere in LK.
+ */
+static int find_thumb_call_triplet(const uint8_t *data, uint32_t size,
+                                   uint32_t base,
+                                   uint32_t first_target,
+                                   uint32_t third_target,
+                                   uint32_t *middle_target)
+{
+    csh handle;
+
+    if (!data || !middle_target || size < 12 ||
+        cs_open(CS_ARCH_ARM, CS_MODE_THUMB, &handle) != CS_ERR_OK)
+        return -1;
+
+    if (cs_option(handle, CS_OPT_DETAIL, CS_OPT_ON) != CS_ERR_OK) {
+        cs_close(&handle);
+        return -1;
+    }
+
+    for (uint32_t off = 0; off <= size - 12; off += 2) {
+        uint16_t first_halfword;
+        uint32_t first;
+        uint32_t middle;
+        uint32_t third;
+
+        /*
+         * Thumb-2 BL/BLX starts with 11110xxxxx.  This cheap filter keeps
+         * us from invoking Capstone on every 2-byte boundary.
+         */
+        first_halfword = (uint16_t)data[off] |
+                         ((uint16_t)data[off + 1] << 8);
+        if ((first_halfword & 0xf800u) != 0xf000u)
+            continue;
+
+        if (decode_thumb_call_target(data, size, base, off, handle,
+                                     &first) != 0 ||
+            first != first_target)
+            continue;
+
+        if (decode_thumb_call_target(data, size, base, off + 4, handle,
+                                     &middle) != 0)
+            continue;
+
+        if (decode_thumb_call_target(data, size, base, off + 8, handle,
+                                     &third) != 0 ||
+            third != third_target)
+            continue;
+
+        if ((uint64_t)(middle & ~1u) < (uint64_t)base ||
+            (uint64_t)(middle & ~1u) >= (uint64_t)base + size)
+            continue;
+
+        *middle_target = middle;
+        fprintf(stderr,
+                "[analyzer] udc_stop: fastboot_okay=0x%08x "
+                "-> udc_stop=0x%08x -> mtk_wdt_init=0x%08x\n",
+                first, middle, third);
+        cs_close(&handle);
+        return 0;
+    }
+
+    cs_close(&handle);
+    return -1;
+}
+
 static int try_udc_stop_mode(const uint8_t *data, uint32_t size,
                              uint32_t base, int thumb,
+                             uint32_t fastboot_okay,
                              uint32_t mtk_wdt_init, uint32_t *addr)
 {
     arm_analysis_t a;
+
+    /*
+     * The MT6589 KitKat fastboot continue path has a very specific call
+     * triplet:
+     *
+     *     fastboot_okay();
+     *     udc_stop();
+     *     mtk_wdt_init();
+     *
+     * Prefer the raw Thumb scan because the LK image contains interleaved
+     * literal/data regions which can desynchronize the linear decoder.
+     */
+    if (thumb &&
+        find_thumb_call_triplet(data, size, base,
+                                fastboot_okay, mtk_wdt_init, addr) == 0)
+        return 0;
 
     if (open_analysis(&a, data, size, base, thumb) != 0)
         return -1;
 
     /*
-     * KitKat LK calls udc_stop() immediately before mtk_wdt_init() in the
-     * fastboot "continue" path:
+     * Keep the linear-analysis fallback for other LK layouts, but still
+     * require the fastboot_okay -> candidate -> mtk_wdt_init call sequence
+     * so unrelated mtk_wdt_init callers are not mistaken for udc_stop().
      *
-     *     BL  udc_stop
-     *     BL  mtk_wdt_init
-     *
-     * The diagnostic string used by the old extractor is not present in
-     * this LK, so use this call-pair relationship as the semantic anchor.
+     * The raw Thumb scan above is the primary path for the Lenovo KitKat
+     * image because it is not affected by linear decode synchronization.
      */
-    for (size_t i = 1; i < a.count; i++) {
+    for (size_t i = 2; i < a.count; i++) {
         uint32_t first;
         uint32_t second;
+        uint32_t third;
 
-        if (call_target(&a, 0, i - 1, &first) != 0 ||
-            call_target(&a, 0, i, &second) != 0)
+        if (call_target(&a, 0, i - 2, &first) != 0 ||
+            call_target(&a, 0, i - 1, &second) != 0 ||
+            call_target(&a, 0, i, &third) != 0)
             continue;
 
-        if (second != mtk_wdt_init ||
-            !ptr_in_image(&a, first, 1))
+        if (first != fastboot_okay ||
+            third != mtk_wdt_init ||
+            !ptr_in_image(&a, second, thumb))
             continue;
 
-        *addr = first;
+        *addr = second;
         fprintf(stderr,
-                "[analyzer] udc_stop: preceding mtk_wdt_init target=0x%08x\n",
-                first);
+                "[analyzer] udc_stop: fastboot_okay=0x%08x "
+                "-> udc_stop=0x%08x -> mtk_wdt_init=0x%08x\n",
+                first, second, third);
         close_analysis(&a);
         return 0;
     }
@@ -1789,15 +1925,17 @@ static int try_udc_stop_mode(const uint8_t *data, uint32_t size,
 }
 
 int extract_udc_stop(const uint8_t *data, uint32_t size, uint32_t base,
-                     uint32_t *addr)
+                     uint32_t fastboot_okay, uint32_t *addr)
 {
     uint32_t mtk_wdt_init;
 
     if (extract_mtk_wdt_init(data, size, base, &mtk_wdt_init) != 0)
         return -1;
-    if (try_udc_stop_mode(data, size, base, 1, mtk_wdt_init, addr) == 0)
+    if (try_udc_stop_mode(data, size, base, 1,
+                          fastboot_okay, mtk_wdt_init, addr) == 0)
         return 0;
-    return try_udc_stop_mode(data, size, base, 0, mtk_wdt_init, addr);
+    return try_udc_stop_mode(data, size, base, 0,
+                             fastboot_okay, mtk_wdt_init, addr);
 }
 
 int extract_mt_boot_init(const uint8_t *data, uint32_t size, uint32_t base,

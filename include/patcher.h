@@ -28,9 +28,9 @@ int extract_fastboot_fail(const uint8_t *data, uint32_t size, uint32_t base,
 int extract_fastboot_okay(const uint8_t *data, uint32_t size, uint32_t base,
                           uint32_t *addr);
 int extract_udc_stop(const uint8_t *data, uint32_t size, uint32_t base,
-                     uint32_t *addr);
+                     uint32_t fastboot_okay, uint32_t *addr);
 int extract_mt_boot_init(const uint8_t *data, uint32_t size, uint32_t base,
-                         uint32_t *addr);
+                          uint32_t *addr);
 int extract_boot_mode_addr(const uint8_t *data, uint32_t size, uint32_t base,
                            uint32_t *addr);
 
