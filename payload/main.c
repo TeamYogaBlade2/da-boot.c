@@ -84,6 +84,26 @@ static int address_range_valid(uint32_t addr, uint32_t size) {
     return size <= UINT32_MAX - addr;
 }
 
+static int download_range_allowed(const payload_params_t *params,
+                                  uint32_t addr, uint32_t size) {
+    if (!params || !address_range_valid(addr, size))
+        return 0;
+
+    uint32_t end = addr + size;
+
+    for (int i = 0; i < MAX_BLACKLIST; i++) {
+        const blacklist_range_t *entry = &params->blacklist[i];
+
+        if (entry->mode != BLACKLIST_DL)
+            continue;
+
+        if (addr < entry->range.end && end > entry->range.start)
+            return 0;
+    }
+
+    return 1;
+}
+
 // USB送受信ラッパー
 static int usb_send_wrapper(const uint8_t *buf, uint32_t len) {
     return usb_send(buf, len);
@@ -605,7 +625,8 @@ static void handle_message(protocol_t *proto, message_t *msg) {
         case MSG_WRITE: {
             // データ受信
             uint32_t size = msg->write.size;
-            if (!address_range_valid(msg->write.addr, size)) {
+            if (!download_range_allowed(&g_params,
+                                        msg->write.addr, size)) {
                 resp.type = RESP_NACK;
                 resp.err = PROTO_ERR_INVALID_PARAMS;
                 break;
