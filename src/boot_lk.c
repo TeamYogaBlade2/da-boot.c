@@ -342,7 +342,13 @@ static int reserve_payload_range(payload_params_t *params,
         if (params->blacklist[i].mode == BLACKLIST_NONE) {
             params->blacklist[i].range.start = start;
             params->blacklist[i].range.end = end;
-            params->blacklist[i].mode = BLACKLIST_DL;
+            /*
+             * This reservation only keeps the resident payload out of the
+             * fixed-address fastboot area.  The host still needs to upload
+             * LK and the boot argument into that area, so it must not be a
+             * download blacklist.
+             */
+            params->blacklist[i].mode = BLACKLIST_RELOC;
             return 0;
         }
     }
@@ -684,8 +690,22 @@ int run_lk_mode(serial_t *s, const soc_info_t *soc, const char *payload_path,
             return -1;
         }
 
-        /* The payload allocator owns a 1 MiB range, so reserve the fixed
-         * boot argument buffer before creating the hook trampoline. */
+        boot_arg_t boot_arg;
+        boot_arg_init(&boot_arg, dram_size_per_rank, dram_ranks, lk_mode);
+        printf("Uploading boot arg to 0x%x...\n", boot_arg_addr);
+        if (upload_buffer(&proto, s, boot_arg_addr,
+                          (const uint8_t *)&boot_arg, boot_arg_size,
+                          "boot argument") != 0) {
+            if (fastboot_bootimg_owned) unlink(fastboot_bootimg_path);
+            free(payload);
+            free(lk_data);
+            return -1;
+        }
+
+        /*
+         * The boot argument must be resident before installing hooks, so
+         * reserve it only after its host-side upload has completed.
+         */
         message_init_blacklist(&msg, boot_arg_addr,
                                boot_arg_addr + boot_arg_size);
         if (protocol_send_message(&proto, &msg) != 0 ||
@@ -703,18 +723,6 @@ int run_lk_mode(serial_t *s, const soc_info_t *soc, const char *payload_path,
             protocol_read_response(&proto, &resp) != 0 ||
             resp.type != RESP_ACK) {
             fprintf(stderr, "Failed to install fastboot_init hook\n");
-            if (fastboot_bootimg_owned) unlink(fastboot_bootimg_path);
-            free(payload);
-            free(lk_data);
-            return -1;
-        }
-
-        boot_arg_t boot_arg;
-        boot_arg_init(&boot_arg, dram_size_per_rank, dram_ranks, lk_mode);
-        printf("Uploading boot arg to 0x%x...\n", boot_arg_addr);
-        if (upload_buffer(&proto, s, boot_arg_addr,
-                          (const uint8_t *)&boot_arg, boot_arg_size,
-                          "boot argument") != 0) {
             if (fastboot_bootimg_owned) unlink(fastboot_bootimg_path);
             free(payload);
             free(lk_data);
@@ -833,32 +841,6 @@ int run_lk_mode(serial_t *s, const soc_info_t *soc, const char *payload_path,
             protocol_read_response(&proto, &resp) != 0 ||
             resp.type != RESP_ACK) {
             fprintf(stderr, "Failed to reserve LK ramdisk range\n");
-            unlink(kernel_mtk_path);
-            unlink(ramdisk_mtk_path);
-            free(payload);
-            free(lk_data);
-            return -1;
-        }
-
-        message_init_blacklist(&msg, lk_base,
-                               lk_base + lk_content_size);
-        if (protocol_send_message(&proto, &msg) != 0 ||
-            protocol_read_response(&proto, &resp) != 0 ||
-            resp.type != RESP_ACK) {
-            fprintf(stderr, "Failed to reserve LK range\n");
-            unlink(kernel_mtk_path);
-            unlink(ramdisk_mtk_path);
-            free(payload);
-            free(lk_data);
-            return -1;
-        }
-
-        message_init_blacklist(&msg, boot_arg_addr,
-                               boot_arg_addr + boot_arg_size);
-        if (protocol_send_message(&proto, &msg) != 0 ||
-            protocol_read_response(&proto, &resp) != 0 ||
-            resp.type != RESP_ACK) {
-            fprintf(stderr, "Failed to reserve boot arg range\n");
             unlink(kernel_mtk_path);
             unlink(ramdisk_mtk_path);
             free(payload);
@@ -990,7 +972,43 @@ int run_lk_mode(serial_t *s, const soc_info_t *soc, const char *payload_path,
         free(lk_data);
         return -1;
     }
+
+    message_init_blacklist(&msg, lk_base,
+                           lk_base + lk_content_size);
+    if (protocol_send_message(&proto, &msg) != 0 ||
+        protocol_read_response(&proto, &resp) != 0 ||
+        resp.type != RESP_ACK) {
+        fprintf(stderr, "Failed to reserve LK range\n");
+        free(payload);
+        free(lk_data);
+        return -1;
+    }
     free(lk_data);
+
+    // Boot arg準備とアップロード
+    boot_arg_t boot_arg;
+    boot_arg_init(&boot_arg, dram_size_per_rank, dram_ranks, lk_mode);
+    printf("Uploading boot arg to 0x%x...\n", boot_arg_addr);
+    if (upload_buffer(&proto, s, boot_arg_addr,
+                      (const uint8_t *)&boot_arg, boot_arg_size,
+                      "boot argument") != 0) {
+        free(payload);
+        return -1;
+    }
+
+    /*
+     * The boot argument is now uploaded.  Reserve it before creating hook
+     * trampolines so the allocator cannot place a trampoline over it.
+     */
+    message_init_blacklist(&msg, boot_arg_addr,
+                           boot_arg_addr + boot_arg_size);
+    if (protocol_send_message(&proto, &msg) != 0 ||
+        protocol_read_response(&proto, &resp) != 0 ||
+        resp.type != RESP_ACK) {
+        fprintf(stderr, "Failed to reserve boot arg range\n");
+        free(payload);
+        return -1;
+    }
 
     // フック設定
     message_init_hook(&msg, HOOK_MT_PART_GENERIC_READ);
@@ -1008,17 +1026,6 @@ int run_lk_mode(serial_t *s, const soc_info_t *soc, const char *payload_path,
         fprintf(stderr, "mt_part_generic_read hook rejected: type=0x%02x err=%u\n",
                 resp.type, resp.err);
         fprintf(stderr, "Failed to install mt_part_generic_read hook\n");
-        free(payload);
-        return -1;
-    }
-
-    // Boot arg準備とアップロード
-    boot_arg_t boot_arg;
-    boot_arg_init(&boot_arg, dram_size_per_rank, dram_ranks, lk_mode);
-    printf("Uploading boot arg to 0x%x...\n", boot_arg_addr);
-    if (upload_buffer(&proto, s, boot_arg_addr,
-                      (const uint8_t *)&boot_arg, boot_arg_size,
-                      "boot argument") != 0) {
         free(payload);
         return -1;
     }
