@@ -1749,33 +1749,31 @@ static int try_udc_stop_mode(const uint8_t *data, uint32_t size,
                              uint32_t base, int thumb,
                              uint32_t mtk_wdt_init, uint32_t *addr)
 {
-    const char *pat = "phone will continue boot up after 5s...";
-    const uint8_t *found = find_string(data, size, pat);
     arm_analysis_t a;
-    uint32_t str_va;
-    size_t ref;
-    size_t start;
 
-    if (!found || open_analysis(&a, data, size, base, thumb) != 0)
+    if (open_analysis(&a, data, size, base, thumb) != 0)
         return -1;
 
-    str_va = base + (uint32_t)(found - data);
-    if (find_reference(&a, str_va, &ref) != 0) {
-        close_analysis(&a);
-        return -1;
-    }
-
-    start = ref > 32 ? ref - 32 : 0;
-    for (size_t i = start; i + 1 < ref; i++) {
+    /*
+     * KitKat LK calls udc_stop() immediately before mtk_wdt_init() in the
+     * fastboot "continue" path:
+     *
+     *     BL  udc_stop
+     *     BL  mtk_wdt_init
+     *
+     * The diagnostic string used by the old extractor is not present in
+     * this LK, so use this call-pair relationship as the semantic anchor.
+     */
+    for (size_t i = 1; i < a.count; i++) {
         uint32_t first;
         uint32_t second;
 
-        if (call_target(&a, 0, i, &first) != 0 ||
-            call_target(&a, 0, i + 1, &second) != 0)
+        if (call_target(&a, 0, i - 1, &first) != 0 ||
+            call_target(&a, 0, i, &second) != 0)
             continue;
 
-        /* cmd_continue() calls udc_stop() immediately before mtk_wdt_init(). */
-        if (second != mtk_wdt_init)
+        if (second != mtk_wdt_init ||
+            !ptr_in_image(&a, first, 1))
             continue;
 
         *addr = first;
@@ -1863,21 +1861,19 @@ static int try_boot_mode_addr_mode(const uint8_t *data, uint32_t size,
         if (load_base != reg || load_arm->operands[1].mem.disp != 0)
             continue;
 
-        /* Resolve the LDR which feeds the final g_boot_mode load.  Its
-         * effective address is the GOT slot and its loaded value is the
-         * runtime address of g_boot_mode; we intentionally do not read the
-         * BSS object itself because it is absent from the file image. */
-        if (i < begin + 2 ||
-            a.insn[i - 2].id != ARM_INS_LDR ||
-            !a.insn[i - 2].detail ||
-            a.insn[i - 2].detail->arm.op_count < 2 ||
-            a.insn[i - 2].detail->arm.operands[0].type != ARM_OP_REG ||
-            reg_index(a.insn[i - 2].detail->arm.operands[0].reg) != reg ||
-            a.insn[i - 2].detail->arm.operands[1].type != ARM_OP_MEM ||
-            a.insn[i - 2].detail->arm.operands[1].mem.index == ARM_REG_INVALID)
-            continue;
-
-        value = resolve_definition(&a, begin, i - 2, reg, 0);
+        /*
+         * The final LDR dereferences the runtime address of g_boot_mode.
+         * Resolve the register one instruction before that final LDR so
+         * resolve_definition() follows:
+         *
+         *     GOT base
+         *       + GOT offset
+         *       -> g_boot_mode address
+         *
+         * instead of treating the PC-relative GOT offset itself as the
+         * global address.
+         */
+        value = resolve_reg_before(&a, begin, i - 1, reg, 0);
         if (!value_is_full(value) || value.value < 0x80000000u)
             continue;
 
