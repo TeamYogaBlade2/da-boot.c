@@ -1700,7 +1700,7 @@ static int try_fastboot_okay_mode(const uint8_t *data, uint32_t size,
         return -1;
 
     if (find_instruction_index(&a, fastboot_fail, &fail_idx) != 0 ||
-        ack_wrapper_matches(&a, fail_idx, "FAIL\n", &ack_target) != 0) {
+        ack_wrapper_matches(&a, fail_idx, "FAIL", &ack_target) != 0) {
         close_analysis(&a);
         return -1;
     }
