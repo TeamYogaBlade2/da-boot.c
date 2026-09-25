@@ -26,6 +26,7 @@ static int message_min_size(const uint8_t *buf, uint32_t size) {
         case MSG_WRITE:
         case MSG_FLUSH_CACHE:
         case MSG_BLACKLIST_RANGE:
+        case MSG_RESERVE_RANGE:
             return 9;
         case MSG_JUMP:
             return 15;
@@ -82,6 +83,10 @@ int protocol_send_message(protocol_t *p, const message_t *msg) {
         case MSG_BLACKLIST_RANGE:
             memcpy(&buf[len], &msg->blacklist.start, 4); len += 4;
             memcpy(&buf[len], &msg->blacklist.end, 4); len += 4;
+            break;
+        case MSG_RESERVE_RANGE:
+            memcpy(&buf[len], &msg->reserve.start, 4); len += 4;
+            memcpy(&buf[len], &msg->reserve.end, 4); len += 4;
             break;
         case MSG_SET_PARAMS:
             buf[len++] = msg->set_params.type;
@@ -166,6 +171,10 @@ int protocol_read_message(protocol_t *p, message_t *msg) {
         case MSG_BLACKLIST_RANGE:
             memcpy(&msg->blacklist.start, &p->buf[off], 4); off += 4;
             memcpy(&msg->blacklist.end, &p->buf[off], 4); off += 4;
+            break;
+        case MSG_RESERVE_RANGE:
+            memcpy(&msg->reserve.start, &p->buf[off], 4); off += 4;
+            memcpy(&msg->reserve.end, &p->buf[off], 4); off += 4;
             break;
         case MSG_SET_PARAMS:
             msg->set_params.type = p->buf[off++];

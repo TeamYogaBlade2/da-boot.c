@@ -16,7 +16,8 @@ typedef enum {
     MSG_HOOK,
     MSG_GET_FREE_RANGE,
     MSG_BLACKLIST_RANGE,
-    MSG_SET_PARAMS
+    MSG_SET_PARAMS,
+    MSG_RESERVE_RANGE = 0xAA
 } msg_type_t;
 
 #define RESP_ACK   'A'
@@ -66,6 +67,7 @@ typedef struct {
         hook_id_t hook;
         struct { uint32_t size; } get_free_range;
         struct { uint32_t start; uint32_t end; } blacklist;
+        struct { uint32_t start; uint32_t end; } reserve;
         struct {
             params_type_t type;
             union {
@@ -102,6 +104,7 @@ void message_init_jump(message_t *m, uint32_t addr, uint32_t r0, uint32_t r1, in
 void message_init_hook(message_t *m, hook_id_t hook);
 void message_init_get_free_range(message_t *m, uint32_t size);
 void message_init_blacklist(message_t *m, uint32_t start, uint32_t end);
+void message_init_reserve_range(message_t *m, uint32_t start, uint32_t end);
 void message_init_set_params_preloader(message_t *m, preloader_runner_params_t *p);
 void message_init_set_params_lk(message_t *m, lk_runner_params_t *p);
 

@@ -50,6 +50,7 @@ static int message_min_size(const uint8_t *buf, uint32_t size) {
         case MSG_WRITE:
         case MSG_FLUSH_CACHE:
         case MSG_BLACKLIST_RANGE:
+        case MSG_RESERVE_RANGE:
             return 9;
         case MSG_JUMP:
             return 15;
@@ -107,6 +108,10 @@ int protocol_send_message(protocol_t *p, const message_t *msg) {
         case MSG_BLACKLIST_RANGE:
             memcpy(&buf[len], &msg->blacklist.start, 4); len += 4;
             memcpy(&buf[len], &msg->blacklist.end, 4); len += 4;
+            break;
+        case MSG_RESERVE_RANGE:
+            memcpy(&buf[len], &msg->reserve.start, 4); len += 4;
+            memcpy(&buf[len], &msg->reserve.end, 4); len += 4;
             break;
         case MSG_SET_PARAMS:
             buf[len++] = msg->set_params.type;
@@ -194,6 +199,10 @@ int protocol_read_message(protocol_t *p, message_t *msg) {
         case MSG_BLACKLIST_RANGE:
             memcpy(&msg->blacklist.start, &p->buf[off], 4); off += 4;
             memcpy(&msg->blacklist.end, &p->buf[off], 4); off += 4;
+            break;
+        case MSG_RESERVE_RANGE:
+            memcpy(&msg->reserve.start, &p->buf[off], 4); off += 4;
+            memcpy(&msg->reserve.end, &p->buf[off], 4); off += 4;
             break;
         case MSG_SET_PARAMS:
             msg->set_params.type = p->buf[off++];
@@ -309,6 +318,9 @@ void message_init_hook(message_t *m, hook_id_t hook) { m->type = MSG_HOOK; m->ho
 void message_init_get_free_range(message_t *m, uint32_t size) { m->type = MSG_GET_FREE_RANGE; m->get_free_range.size = size; }
 void message_init_blacklist(message_t *m, uint32_t start, uint32_t end) {
     m->type = MSG_BLACKLIST_RANGE; m->blacklist.start = start; m->blacklist.end = end;
+}
+void message_init_reserve_range(message_t *m, uint32_t start, uint32_t end) {
+    m->type = MSG_RESERVE_RANGE; m->reserve.start = start; m->reserve.end = end;
 }
 void message_init_set_params_preloader(message_t *m, preloader_runner_params_t *p) {
     m->type = MSG_SET_PARAMS; m->set_params.type = PARAMS_PRELOADER; m->set_params.preloader = *p;

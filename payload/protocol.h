@@ -15,6 +15,7 @@
 #define MSG_GET_FREE_RANGE  0xA7
 #define MSG_BLACKLIST_RANGE 0xA8
 #define MSG_SET_PARAMS      0xA9
+#define MSG_RESERVE_RANGE   0xAA
 
 // レスポンスタイプ
 #define RESP_ACK   'A'
@@ -48,6 +49,7 @@ typedef struct {
         uint8_t hook;
         struct { uint32_t size; } get_free_range;
         struct { uint32_t start; uint32_t end; } blacklist;
+        struct { uint32_t start; uint32_t end; } reserve;
         struct {
             uint8_t type;
             union {

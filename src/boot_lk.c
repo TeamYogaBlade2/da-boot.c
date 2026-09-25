@@ -822,8 +822,15 @@ int run_lk_mode(serial_t *s, const soc_info_t *soc, const char *payload_path,
          * reservations the large boot.img is placed directly over the LK
          * kernel destination (and, before that, over 0x800a0000).
          */
-        message_init_blacklist(&msg, MT6589_LK_KERNEL_ADDR,
-                               MT6589_LK_KERNEL_ADDR + MTK_BOOT_PAGE_ALIGN(kernel_size));
+        /*
+         * These are fixed LK destination ranges.  Reserve them from the
+         * payload allocator, but do not forbid host writes there: the
+         * boot argument at 0x800a0000 intentionally lives inside the
+         * kernel destination range and must still be uploaded.
+         */
+        message_init_reserve_range(&msg, MT6589_LK_KERNEL_ADDR,
+                                   MT6589_LK_KERNEL_ADDR +
+                                   MTK_BOOT_PAGE_ALIGN(kernel_size));
         if (protocol_send_message(&proto, &msg) != 0 ||
             protocol_read_response(&proto, &resp) != 0 ||
             resp.type != RESP_ACK) {
@@ -835,8 +842,9 @@ int run_lk_mode(serial_t *s, const soc_info_t *soc, const char *payload_path,
             return -1;
         }
 
-        message_init_blacklist(&msg, MT6589_LK_RAMDISK_ADDR,
-                               MT6589_LK_RAMDISK_ADDR + MTK_BOOT_PAGE_ALIGN(ramdisk_size));
+        message_init_reserve_range(&msg, MT6589_LK_RAMDISK_ADDR,
+                                   MT6589_LK_RAMDISK_ADDR +
+                                   MTK_BOOT_PAGE_ALIGN(ramdisk_size));
         if (protocol_send_message(&proto, &msg) != 0 ||
             protocol_read_response(&proto, &resp) != 0 ||
             resp.type != RESP_ACK) {

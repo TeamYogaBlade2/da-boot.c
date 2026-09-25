@@ -767,6 +767,18 @@ static void handle_message(protocol_t *proto, message_t *msg) {
                 resp.err = PROTO_ERR_NOT_SUPPORTED;
             }
             break;
+        case MSG_RESERVE_RANGE:
+            if (msg->reserve.start >= msg->reserve.end) {
+                resp.type = RESP_NACK;
+                resp.err = PROTO_ERR_INVALID_PARAMS;
+            } else if (blacklist_reloc(&g_params, msg->reserve.start,
+                                       msg->reserve.end) == 0) {
+                resp.type = RESP_ACK;
+            } else {
+                resp.type = RESP_NACK;
+                resp.err = PROTO_ERR_NOT_SUPPORTED;
+            }
+            break;
         case MSG_SET_PARAMS:
             if (msg->set_params.type == PARAMS_PRELOADER) {
                 g_preloader_params = msg->set_params.preloader;
