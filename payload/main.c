@@ -62,6 +62,14 @@ static void uart_print(const char *s) {
         usb_log_bytes((const uint8_t *)start, (uint32_t)(s - start));
 }
 
+/*
+ * Used before .bss is initialized.  Do not touch any payload global here.
+ */
+static void bootstrap_uart_print(const char *s) {
+    while (*s)
+        uart_putc(*s++);
+}
+
 static void uart_print_hex(uint32_t v) {
     char buf[9];
     for (int i = 7; i >= 0; i--) {
@@ -457,7 +465,7 @@ void payload_bootstrap(uint32_t runtime_base) {
         (uint32_t)(uintptr_t)main - runtime_base;
 
     if (params->magic != MAGIC_DA || params->version != CURRENT_VERSION) {
-        uart_print("Invalid payload parameters\n");
+        bootstrap_uart_print("Invalid payload parameters\n");
         while (1);
     }
 
@@ -470,7 +478,7 @@ void payload_bootstrap(uint32_t runtime_base) {
      */
     mem_range_t reloc_range;
     if (find_unused_range(params, image_size, &reloc_range) != 0) {
-        uart_print("Failed to find relocation range\n");
+        bootstrap_uart_print("Failed to find relocation range\n");
         while (1);
     }
 
@@ -501,7 +509,12 @@ void payload_bootstrap(uint32_t runtime_base) {
             }
         }
 
-        /* The relocated text must be visible to the instruction cache. */
+        /*
+         * The relocated image was written through the data side.  Clean
+         * those lines before invalidating the instruction side so a split
+         * D/I-cache implementation cannot execute stale instructions.
+         */
+        flush_dcache(active_base, raw_size);
         flush_icache();
     } else {
         /*
