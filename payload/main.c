@@ -132,6 +132,8 @@ typedef void (*lk_wdt_init_t)(void);
 typedef void (*lk_boot_linux_t)(void *kernel, unsigned *tags,
                                 char *cmdline, unsigned machtype,
                                 void *ramdisk, unsigned ramdisk_size);
+typedef const char *(*lk_mt_disp_get_lcm_id_t)(void);
+typedef uint32_t (*lk_mt_disp_get_lcd_time_t)(void);
 
 #define FASTBOOT_BOOT_MAGIC       "ANDROID!"
 #define FASTBOOT_BOOT_HDR_SIZE    0x260u
@@ -139,6 +141,94 @@ typedef void (*lk_boot_linux_t)(void *kernel, unsigned *tags,
 #define FASTBOOT_MTK_MAGIC        0x58881688u
 #define FASTBOOT_DEFAULT_CMDLINE  "console=tty0 console=ttyMT3,921600n1 root=/dev/ram"
 #define FASTBOOT_CMDLINE_SIZE     1024u
+
+/* Blade 10 KitKat LK display helpers, relative to lk_base = 0x81e00000. */
+#define MT6589_LK_BOOT_LINUX_OFFSET           0x1e3bcu
+#define MT6589_LK_MT_DISP_GET_LCM_ID_OFFSET   0x0e914u
+#define MT6589_LK_MT_DISP_GET_LCD_TIME_OFFSET 0x0e7ecu
+
+static int fastboot_cmdline_append(char *cmdline, size_t capacity,
+                                   size_t *length, const char *text) {
+    size_t n;
+
+    if (!cmdline || !length || !text || *length >= capacity)
+        return -1;
+
+    n = strlen(text);
+    if (n > capacity - *length - 1u)
+        return -1;
+
+    memcpy(cmdline + *length, text, n);
+    *length += n;
+    cmdline[*length] = '\0';
+    return 0;
+}
+
+static int fastboot_cmdline_append_u32(char *cmdline, size_t capacity,
+                                       size_t *length, uint32_t value) {
+    char digits[10];
+    size_t n = 0;
+    size_t i;
+
+    do {
+        digits[n++] = (char)('0' + value % 10u);
+        value /= 10u;
+    } while (value != 0 && n < sizeof(digits));
+
+    if (n > capacity - *length - 1u)
+        return -1;
+
+    for (i = 0; i < n; i++)
+        cmdline[*length + i] = digits[n - 1u - i];
+    *length += n;
+    cmdline[*length] = '\0';
+    return 0;
+}
+
+/*
+ * Reproduce the display arguments that the stock MT6589 storage boot path
+ * adds immediately before boot_linux():
+ *
+ *     lcm=%1d-%s
+ *     fps=%1d
+ *
+ * The kernel uses lcm= to avoid the DSI auto-detection path.  Without it,
+ * mtkfb_find_lcm_driver() calls DISP_SelectDevice(NULL), and the DSI path
+ * enters init_dsi() before it knows which panel driver is selected.
+ */
+static int fastboot_append_stock_display_cmdline(char *cmdline,
+                                                 size_t capacity) {
+    uintptr_t ptr_boot_linux = g_lk_params.ptr_boot_linux;
+    uint32_t lk_base;
+    const char *lcm_id;
+    uint32_t lcd_time;
+    size_t length;
+    lk_mt_disp_get_lcm_id_t get_lcm_id;
+    lk_mt_disp_get_lcd_time_t get_lcd_time;
+
+    if (ptr_boot_linux < MT6589_LK_BOOT_LINUX_OFFSET)
+        return -1;
+
+    lk_base = (uint32_t)(ptr_boot_linux - MT6589_LK_BOOT_LINUX_OFFSET);
+    get_lcm_id = (lk_mt_disp_get_lcm_id_t)(uintptr_t)
+        ((lk_base + MT6589_LK_MT_DISP_GET_LCM_ID_OFFSET) | 1u);
+    get_lcd_time = (lk_mt_disp_get_lcd_time_t)(uintptr_t)
+        ((lk_base + MT6589_LK_MT_DISP_GET_LCD_TIME_OFFSET) | 1u);
+
+    lcm_id = get_lcm_id();
+    if (!lcm_id || !*lcm_id)
+        return -1;
+    lcd_time = get_lcd_time();
+    length = strlen(cmdline);
+
+    if (fastboot_cmdline_append(cmdline, capacity, &length, " lcm=1-") != 0 ||
+        fastboot_cmdline_append(cmdline, capacity, &length, lcm_id) != 0 ||
+        fastboot_cmdline_append(cmdline, capacity, &length, " fps=") != 0 ||
+        fastboot_cmdline_append_u32(cmdline, capacity, &length, lcd_time) != 0)
+        return -1;
+
+    return 0;
+}
 
 /*
  * Stock MT6589 LK re-enables the watchdog in cmd_boot(), but a custom
@@ -343,6 +433,14 @@ static void fastboot_boot_handler(const char *arg, void *data, unsigned sz) {
         memcpy(boot_cmdline, cmdline, cmdline_len);
         boot_cmdline[cmdline_len] = '\0';
     }
+
+    /*
+     * This is required for the downstream MTK display driver.  The stock
+     * storage boot path adds these arguments before calling boot_linux().
+     */
+    if (fastboot_append_stock_display_cmdline(boot_cmdline,
+                                              sizeof(boot_cmdline)) != 0)
+        return fastboot_boot_fail("LK LCM not available");
 
     ((lk_fastboot_ack_t)(uintptr_t)(g_lk_params.ptr_fastboot_okay | 1u))("");
     ((lk_udc_stop_t)(uintptr_t)(g_lk_params.ptr_udc_stop | 1u))();
