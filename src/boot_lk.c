@@ -24,16 +24,6 @@
 #define MT6589_LK_KERNEL_ADDR  0x80008000u
 #define MT6589_LK_RAMDISK_ADDR 0x84000000u
 
-/* Exact Blade 10 KitKat LK offsets relative to lk_base = 0x81E00000. */
-#define MT6589_LK_FASTBOOT_INIT_OFFSET     0x1ee7cu
-#define MT6589_LK_FASTBOOT_REGISTER_OFFSET 0x1ea9cu
-#define MT6589_LK_FASTBOOT_OKAY_OFFSET     0x1ee6cu
-#define MT6589_LK_FASTBOOT_FAIL_OFFSET     0x1ecd4u
-#define MT6589_LK_UDC_STOP_OFFSET          0x0e0b8u
-#define MT6589_LK_MTK_WDT_DISABLE_OFFSET   0x156d8u
-#define MT6589_LK_MTK_WDT_INIT_OFFSET      0x15718u
-#define MT6589_LK_MT_BOOT_INIT_OFFSET      0x1e9c8u
-#define MT6589_LK_BOOT_MODE_OFFSET         0x44418u
 #define MT6589_LK_MACHTYPE                 0x19bdu
 
 /*
@@ -640,6 +630,14 @@ int run_lk_mode(serial_t *s, const soc_info_t *soc, const char *payload_path,
         char fastboot_bootimg_path[1024];
         int fastboot_bootimg_owned = 0;
         lk_runner_params_t lk_params;
+        uint32_t fastboot_init = 0;
+        uint32_t fastboot_register = 0;
+        uint32_t fastboot_okay = 0;
+        uint32_t fastboot_fail = 0;
+        uint32_t udc_stop = 0;
+        uint32_t mtk_wdt_init = 0;
+        uint32_t mt_boot_init = 0;
+        uint32_t boot_mode_addr = 0;
 
         if (lk_base != soc->lk_base_hint) {
             fprintf(stderr,
@@ -660,27 +658,53 @@ int run_lk_mode(serial_t *s, const soc_info_t *soc, const char *payload_path,
             return -1;
         }
 
+        if (extract_fastboot_init(lk_code, lk_content_size, lk_base,
+                                  &fastboot_init) != 0 ||
+            extract_fastboot_register(lk_code, lk_content_size, lk_base,
+                                      &fastboot_register) != 0 ||
+            extract_fastboot_fail(lk_code, lk_content_size, lk_base,
+                                  &fastboot_fail) != 0 ||
+            extract_fastboot_okay(lk_code, lk_content_size, lk_base,
+                                  &fastboot_okay) != 0 ||
+            extract_udc_stop(lk_code, lk_content_size, lk_base,
+                             &udc_stop) != 0 ||
+            extract_mtk_wdt_init(lk_code, lk_content_size, lk_base,
+                                 &mtk_wdt_init) != 0 ||
+            extract_mt_boot_init(lk_code, lk_content_size, lk_base,
+                                 &mt_boot_init) != 0 ||
+            extract_boot_mode_addr(lk_code, lk_content_size, lk_base,
+                                   &boot_mode_addr) != 0) {
+            fprintf(stderr, "Failed to extract LK fastboot symbols\n");
+            if (fastboot_bootimg_owned)
+                unlink(fastboot_bootimg_path);
+            free(payload);
+            free(lk_data);
+            return -1;
+        }
+
+        printf("LK fastboot_init: 0x%x\n", fastboot_init);
+        printf("LK fastboot_register: 0x%x\n", fastboot_register);
+        printf("LK fastboot_okay: 0x%x\n", fastboot_okay);
+        printf("LK fastboot_fail: 0x%x\n", fastboot_fail);
+        printf("LK udc_stop: 0x%x\n", udc_stop);
+        printf("LK mtk_wdt_init: 0x%x\n", mtk_wdt_init);
+        printf("LK mt_boot_init: 0x%x\n", mt_boot_init);
+        printf("LK boot_mode_addr: 0x%x\n", boot_mode_addr);
+
         memset(&lk_params, 0, sizeof(lk_params));
-        lk_params.ptr_mt_boot_init =
-            lk_base + MT6589_LK_MT_BOOT_INIT_OFFSET;
-        lk_params.ptr_fastboot_init =
-            lk_base + MT6589_LK_FASTBOOT_INIT_OFFSET;
-        lk_params.ptr_fastboot_register =
-            lk_base + MT6589_LK_FASTBOOT_REGISTER_OFFSET;
-        lk_params.ptr_fastboot_okay =
-            lk_base + MT6589_LK_FASTBOOT_OKAY_OFFSET;
-        lk_params.ptr_fastboot_fail =
-            lk_base + MT6589_LK_FASTBOOT_FAIL_OFFSET;
-        lk_params.ptr_udc_stop = lk_base + MT6589_LK_UDC_STOP_OFFSET;
-        lk_params.ptr_mtk_wdt_disable =
-            lk_base + MT6589_LK_MTK_WDT_DISABLE_OFFSET;
-        lk_params.ptr_mtk_wdt_init =
-            lk_base + MT6589_LK_MTK_WDT_INIT_OFFSET;
+        lk_params.ptr_mt_boot_init = mt_boot_init;
+        lk_params.ptr_fastboot_init = fastboot_init;
+        lk_params.ptr_fastboot_register = fastboot_register;
+        lk_params.ptr_fastboot_okay = fastboot_okay;
+        lk_params.ptr_fastboot_fail = fastboot_fail;
+        lk_params.ptr_udc_stop = udc_stop;
+        /* The payload disables the watchdog itself before the handoff, so
+         * the legacy mtk_wdt_disable callback field intentionally stays 0. */
+        lk_params.ptr_mtk_wdt_init = mtk_wdt_init;
         lk_params.ptr_mt_part_generic_read = mt_part_generic_read | 1u;
         lk_params.ptr_mt_part_get_partition = mt_part_get_partition | 1u;
         lk_params.ptr_boot_linux_from_storage = boot_linux_from_storage | 1u;
-        lk_params.boot_mode_addr =
-            lk_base + MT6589_LK_BOOT_MODE_OFFSET;
+        lk_params.boot_mode_addr = boot_mode_addr;
         lk_params.machtype = MT6589_LK_MACHTYPE;
 
         message_init_set_params_lk(&msg, &lk_params);

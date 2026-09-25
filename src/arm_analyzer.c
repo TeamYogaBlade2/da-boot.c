@@ -1418,6 +1418,458 @@ static int try_function_by_string_mode(const uint8_t *data, uint32_t size, uint3
     return 0;
 }
 
+static int string_at_va_is(const arm_analysis_t *a, uint32_t va,
+                           const char *value)
+{
+    uint32_t off;
+    size_t len;
+
+    if (!a || !value || va < a->base)
+        return 0;
+
+    off = va - a->base;
+    len = strlen(value);
+    if (off > a->size || len > a->size - off)
+        return 0;
+
+    return memcmp(a->data + off, value, len) == 0;
+}
+
+static int try_most_called_target_by_string_mode(const uint8_t *data,
+                                                 uint32_t size,
+                                                 uint32_t base, int thumb,
+                                                 const char *pat,
+                                                 uint32_t *addr)
+{
+    const uint8_t *found = find_string(data, size, pat);
+    arm_analysis_t a;
+    size_t begin, end, ref_idx;
+    uint32_t targets[32];
+    unsigned counts[32];
+    size_t target_count = 0;
+    unsigned best_count = 0;
+    uint32_t best_target = 0;
+
+    if (!found || open_analysis(&a, data, size, base, thumb) != 0)
+        return -1;
+
+    {
+        uint32_t str_va = base + (uint32_t)(found - data);
+
+        if (find_string_function(&a, str_va, &begin, &end, &ref_idx) != 0) {
+            close_analysis(&a);
+            return -1;
+        }
+    }
+
+    for (size_t i = begin; i < end; i++) {
+        uint32_t target;
+        size_t j;
+
+        if (call_target(&a, begin, i, &target) != 0 ||
+            !ptr_in_image(&a, target, 1))
+            continue;
+
+        for (j = 0; j < target_count; j++) {
+            if (targets[j] == target)
+                break;
+        }
+
+        if (j == target_count) {
+            if (target_count == sizeof(targets) / sizeof(targets[0]))
+                continue;
+            targets[target_count] = target;
+            counts[target_count] = 1;
+            j = target_count++;
+        } else {
+            counts[j]++;
+        }
+
+        if (counts[j] > best_count ||
+            (counts[j] == best_count && target < best_target)) {
+            best_count = counts[j];
+            best_target = target;
+        }
+    }
+
+    (void)ref_idx;
+    close_analysis(&a);
+
+    /* fastboot_init() calls fastboot_register() much more often than any
+     * other helper (9 calls in the Blade 10 KitKat image). */
+    if (best_count < 3)
+        return -1;
+
+    *addr = best_target;
+    fprintf(stderr,
+            "[analyzer] %s: most-called target=0x%08x count=%u\n",
+            pat, best_target, best_count);
+    return 0;
+}
+
+int extract_fastboot_init(const uint8_t *data, uint32_t size, uint32_t base,
+                          uint32_t *addr)
+{
+    if (try_function_by_string_mode(data, size, base, 1,
+                                    "fastboot_init()\n", addr) == 0)
+        return 0;
+    return try_function_by_string_mode(data, size, base, 0,
+                                       "fastboot_init()\n", addr);
+}
+
+int extract_mtk_wdt_init(const uint8_t *data, uint32_t size, uint32_t base,
+                         uint32_t *addr)
+{
+    if (try_function_by_string_mode(data, size, base, 1,
+                                    "UB wdt init\n", addr) == 0)
+        return 0;
+    return try_function_by_string_mode(data, size, base, 0,
+                                       "UB wdt init\n", addr);
+}
+
+int extract_fastboot_register(const uint8_t *data, uint32_t size,
+                              uint32_t base, uint32_t *addr)
+{
+    if (try_most_called_target_by_string_mode(data, size, base, 1,
+                                              "fastboot_init()\n", addr) == 0)
+        return 0;
+    return try_most_called_target_by_string_mode(data, size, base, 0,
+                                                 "fastboot_init()\n", addr);
+}
+
+static int try_fastboot_fail_mode(const uint8_t *data, uint32_t size,
+                                  uint32_t base, int thumb, uint32_t *addr)
+{
+    const char *pat = "unknown command";
+    const uint8_t *found = find_string(data, size, pat);
+    arm_analysis_t a;
+    uint32_t str_va;
+    size_t ref;
+    size_t limit;
+
+    if (!found || open_analysis(&a, data, size, base, thumb) != 0)
+        return -1;
+
+    str_va = base + (uint32_t)(found - data);
+    if (find_reference(&a, str_va, &ref) != 0) {
+        close_analysis(&a);
+        return -1;
+    }
+
+    limit = ref + 8;
+    if (limit > a.count)
+        limit = a.count;
+
+    /* cmd_loop() emits "unknown command" and immediately calls
+     * fastboot_fail().  Anchor on the string xref instead of a fixed offset. */
+    for (size_t i = ref; i < limit; i++) {
+        uint32_t target;
+
+        if (call_target(&a, 0, i, &target) != 0)
+            continue;
+
+        *addr = target;
+        fprintf(stderr,
+                "[analyzer] fastboot_fail: string=xref 0x%08x target=0x%08x\n",
+                (uint32_t)a.insn[ref].address, target);
+        close_analysis(&a);
+        return 0;
+    }
+
+    close_analysis(&a);
+    return -1;
+}
+
+int extract_fastboot_fail(const uint8_t *data, uint32_t size, uint32_t base,
+                          uint32_t *addr)
+{
+    if (try_fastboot_fail_mode(data, size, base, 1, addr) == 0)
+        return 0;
+    return try_fastboot_fail_mode(data, size, base, 0, addr);
+}
+
+static int find_instruction_index(const arm_analysis_t *a, uint32_t address,
+                                  size_t *idx)
+{
+    if (!a || !idx)
+        return -1;
+
+    for (size_t i = 0; i < a->count; i++) {
+        if ((uint32_t)a->insn[i].address == address) {
+            *idx = i;
+            return 0;
+        }
+    }
+
+    return -1;
+}
+
+static int ack_wrapper_matches(const arm_analysis_t *a, size_t idx,
+                               const char *code, uint32_t *ack_target)
+{
+    const cs_insn *mov;
+    const cs_insn *ldr;
+    const cs_insn *add;
+    const cs_insn *branch;
+    uint32_t target;
+    reg_value_t resolved;
+
+    if (!a || !code || idx + 3 >= a->count)
+        return -1;
+
+    mov = &a->insn[idx];
+    ldr = &a->insn[idx + 1];
+    add = &a->insn[idx + 2];
+    branch = &a->insn[idx + 3];
+
+    if (mov->id != ARM_INS_MOV || !mov->detail ||
+        mov->detail->arm.op_count < 2 ||
+        mov->detail->arm.operands[0].type != ARM_OP_REG ||
+        mov->detail->arm.operands[1].type != ARM_OP_REG ||
+        mov->detail->arm.operands[0].reg != ARM_REG_R1 ||
+        mov->detail->arm.operands[1].reg != ARM_REG_R0)
+        return -1;
+
+    if (ldr->id != ARM_INS_LDR || !ldr->detail ||
+        ldr->detail->arm.op_count < 2 ||
+        ldr->detail->arm.operands[0].type != ARM_OP_REG ||
+        ldr->detail->arm.operands[1].type != ARM_OP_MEM ||
+        ldr->detail->arm.operands[0].reg != ARM_REG_R0 ||
+        ldr->detail->arm.operands[1].mem.base != ARM_REG_PC)
+        return -1;
+
+    if (add->id != ARM_INS_ADD || !add->detail ||
+        add->detail->arm.op_count < 2 ||
+        add->detail->arm.operands[0].type != ARM_OP_REG ||
+        add->detail->arm.operands[1].type != ARM_OP_REG ||
+        add->detail->arm.operands[0].reg != ARM_REG_R0 ||
+        add->detail->arm.operands[1].reg != ARM_REG_PC)
+        return -1;
+
+    if (branch_target(branch, &target) != 0)
+        return -1;
+
+    resolved = resolve_reg_before(a, idx, idx + 3, 0, 0);
+    if (!value_is_full(resolved) || !string_at_va_is(a, resolved.value, code))
+        return -1;
+
+    *ack_target = target;
+    return 0;
+}
+
+static int try_fastboot_okay_mode(const uint8_t *data, uint32_t size,
+                                  uint32_t base, int thumb,
+                                  uint32_t fastboot_fail, uint32_t *addr)
+{
+    arm_analysis_t a;
+    size_t fail_idx;
+    uint32_t ack_target;
+
+    if (open_analysis(&a, data, size, base, thumb) != 0)
+        return -1;
+
+    if (find_instruction_index(&a, fastboot_fail, &fail_idx) != 0 ||
+        ack_wrapper_matches(&a, fail_idx, "FAIL\n", &ack_target) != 0) {
+        close_analysis(&a);
+        return -1;
+    }
+
+    /* fastboot_okay() is the sibling four-instruction wrapper which tail
+     * branches to the same fastboot_ack() implementation, but supplies the
+     * literal "OKAY\n" instead of "FAIL\n". */
+    for (size_t i = 0; i + 3 < a.count; i++) {
+        uint32_t candidate_ack_target;
+
+        if ((uint32_t)a.insn[i].address == fastboot_fail)
+            continue;
+        if (ack_wrapper_matches(&a, i, "OKAY\n", &candidate_ack_target) != 0)
+            continue;
+        if (candidate_ack_target != ack_target)
+            continue;
+
+        *addr = (uint32_t)a.insn[i].address;
+        fprintf(stderr,
+                "[analyzer] fastboot_okay: sibling wrapper=0x%08x ack=0x%08x\n",
+                *addr, ack_target);
+        close_analysis(&a);
+        return 0;
+    }
+
+    close_analysis(&a);
+    return -1;
+}
+
+int extract_fastboot_okay(const uint8_t *data, uint32_t size, uint32_t base,
+                          uint32_t *addr)
+{
+    uint32_t fastboot_fail;
+
+    if (extract_fastboot_fail(data, size, base, &fastboot_fail) != 0)
+        return -1;
+
+    if (try_fastboot_okay_mode(data, size, base, 1,
+                               fastboot_fail, addr) == 0)
+        return 0;
+    return try_fastboot_okay_mode(data, size, base, 0,
+                                  fastboot_fail, addr);
+}
+
+static int try_udc_stop_mode(const uint8_t *data, uint32_t size,
+                             uint32_t base, int thumb,
+                             uint32_t mtk_wdt_init, uint32_t *addr)
+{
+    const char *pat = "phone will continue boot up after 5s...";
+    const uint8_t *found = find_string(data, size, pat);
+    arm_analysis_t a;
+    uint32_t str_va;
+    size_t ref;
+    size_t start;
+
+    if (!found || open_analysis(&a, data, size, base, thumb) != 0)
+        return -1;
+
+    str_va = base + (uint32_t)(found - data);
+    if (find_reference(&a, str_va, &ref) != 0) {
+        close_analysis(&a);
+        return -1;
+    }
+
+    start = ref > 32 ? ref - 32 : 0;
+    for (size_t i = start; i + 1 < ref; i++) {
+        uint32_t first;
+        uint32_t second;
+
+        if (call_target(&a, 0, i, &first) != 0 ||
+            call_target(&a, 0, i + 1, &second) != 0)
+            continue;
+
+        /* cmd_continue() calls udc_stop() immediately before mtk_wdt_init(). */
+        if (second != mtk_wdt_init)
+            continue;
+
+        *addr = first;
+        fprintf(stderr,
+                "[analyzer] udc_stop: preceding mtk_wdt_init target=0x%08x\n",
+                first);
+        close_analysis(&a);
+        return 0;
+    }
+
+    close_analysis(&a);
+    return -1;
+}
+
+int extract_udc_stop(const uint8_t *data, uint32_t size, uint32_t base,
+                     uint32_t *addr)
+{
+    uint32_t mtk_wdt_init;
+
+    if (extract_mtk_wdt_init(data, size, base, &mtk_wdt_init) != 0)
+        return -1;
+    if (try_udc_stop_mode(data, size, base, 1, mtk_wdt_init, addr) == 0)
+        return 0;
+    return try_udc_stop_mode(data, size, base, 0, mtk_wdt_init, addr);
+}
+
+int extract_mt_boot_init(const uint8_t *data, uint32_t size, uint32_t base,
+                         uint32_t *addr)
+{
+    if (try_function_by_string_mode(data, size, base, 1,
+                                    "app/mt_boot/mt_boot.c", addr) == 0)
+        return 0;
+    return try_function_by_string_mode(data, size, base, 0,
+                                       "app/mt_boot/mt_boot.c", addr);
+}
+
+static int try_boot_mode_addr_mode(const uint8_t *data, uint32_t size,
+                                   uint32_t base, int thumb, uint32_t *addr)
+{
+    const uint8_t *found = find_string(data, size, "app/mt_boot/mt_boot.c");
+    arm_analysis_t a;
+    uint32_t str_va;
+    size_t begin, end, ref_idx;
+
+    if (!found || open_analysis(&a, data, size, base, thumb) != 0)
+        return -1;
+
+    str_va = base + (uint32_t)(found - data);
+    if (find_string_function(&a, str_va, &begin, &end, &ref_idx) != 0) {
+        close_analysis(&a);
+        return -1;
+    }
+
+    for (size_t i = begin + 1; i < end; i++) {
+        const cs_insn *cmp = &a.insn[i];
+        const cs_insn *load;
+        const cs_arm *cmp_arm;
+        const cs_arm *load_arm;
+        int reg;
+        int load_base;
+        reg_value_t value;
+
+        if (!cmp->detail || cmp->id != ARM_INS_CMP ||
+            cmp->detail->arm.op_count < 2 ||
+            cmp->detail->arm.operands[0].type != ARM_OP_REG ||
+            cmp->detail->arm.operands[1].type != ARM_OP_IMM ||
+            (uint32_t)cmp->detail->arm.operands[1].imm != 99u)
+            continue;
+
+        cmp_arm = &cmp->detail->arm;
+        reg = reg_index(cmp_arm->operands[0].reg);
+        if (reg < 0 || i == begin)
+            continue;
+
+        load = &a.insn[i - 1];
+        if (!load->detail || load->id != ARM_INS_LDR ||
+            load->detail->arm.op_count < 2 ||
+            load->detail->arm.operands[0].type != ARM_OP_REG ||
+            reg_index(load->detail->arm.operands[0].reg) != reg ||
+            load->detail->arm.operands[1].type != ARM_OP_MEM)
+            continue;
+
+        load_arm = &load->detail->arm;
+        load_base = reg_index(load_arm->operands[1].mem.base);
+        if (load_base != reg || load_arm->operands[1].mem.disp != 0)
+            continue;
+
+        /* Resolve the LDR which feeds the final g_boot_mode load.  Its
+         * effective address is the GOT slot and its loaded value is the
+         * runtime address of g_boot_mode; we intentionally do not read the
+         * BSS object itself because it is absent from the file image. */
+        if (i < begin + 2 ||
+            a.insn[i - 2].id != ARM_INS_LDR ||
+            !a.insn[i - 2].detail ||
+            a.insn[i - 2].detail->arm.op_count < 2 ||
+            a.insn[i - 2].detail->arm.operands[0].type != ARM_OP_REG ||
+            reg_index(a.insn[i - 2].detail->arm.operands[0].reg) != reg ||
+            a.insn[i - 2].detail->arm.operands[1].type != ARM_OP_MEM ||
+            a.insn[i - 2].detail->arm.operands[1].mem.index == ARM_REG_INVALID)
+            continue;
+
+        value = resolve_definition(&a, begin, i - 2, reg, 0);
+        if (!value_is_full(value) || value.value < 0x80000000u)
+            continue;
+
+        *addr = value.value;
+        fprintf(stderr,
+                "[analyzer] boot_mode_addr: cmp #99 uses global=0x%08x\n",
+                *addr);
+        close_analysis(&a);
+        return 0;
+    }
+
+    close_analysis(&a);
+    return -1;
+}
+
+int extract_boot_mode_addr(const uint8_t *data, uint32_t size, uint32_t base,
+                           uint32_t *addr)
+{
+    if (try_boot_mode_addr_mode(data, size, base, 1, addr) == 0)
+        return 0;
+    return try_boot_mode_addr_mode(data, size, base, 0, addr);
+}
+
 int extract_mt_part_get_partition(const uint8_t *data, uint32_t size, uint32_t base,
                                   uint32_t *addr)
 {
