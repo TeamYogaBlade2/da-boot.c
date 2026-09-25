@@ -1,5 +1,6 @@
 CC = clang
 OBJCOPY = llvm-objcopy
+READELF = readelf
 TARGET_TRIPLE = arm-none-eabi
 
 CFLAGS = --target=$(TARGET_TRIPLE) \
@@ -44,6 +45,12 @@ $(TARGET): payload.elf
 
 payload.elf: $(OBJS)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^
+	@$(READELF) -r $@ | awk '\
+		/R_ARM_/ && $$0 !~ /R_ARM_RELATIVE/ { \
+			print "unsupported payload relocation:", $$0; \
+			bad = 1; \
+		} \
+		END { exit bad }'
 
 %.o: %.c
 	$(CC) $(CFLAGS) -c -o $@ $<
