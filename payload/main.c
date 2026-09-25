@@ -180,6 +180,38 @@ static void fastboot_boot_fail(const char *reason) {
         fail(reason);
 }
 
+/*
+ * The stock LK keeps a periodic wdt_timer alive while in fastboot:
+ *
+ *     timer_set_periodic(&wdt_timer, 5000,
+ *                        (timer_callback)mtk_wdt_restart, NULL);
+ *
+ * Stock cmd_boot() cancels that timer before entering Linux.  The injected
+ * boot handler does not currently have the timer object's address, so mask
+ * IRQs before disabling the hardware watchdog.  This prevents a pending LK
+ * timer interrupt from re-enabling the WDT after the handoff.
+ *
+ * Linux ARM zImage enters with IRQ/FIQ masked as well, so this preserves the
+ * expected initial interrupt state for the kernel.
+ */
+static void fastboot_mask_interrupts(void) {
+    asm volatile("cpsid if" ::: "memory");
+}
+
+static void fastboot_disable_watchdog(void) {
+    volatile uint32_t * const wdt =
+        (volatile uint32_t *)(uintptr_t)0x10000000u;
+    uint32_t mode = wdt[0];
+
+    mode &= ~1u;       /* WDT_MODE_EN */
+    mode |= 0x22000000u; /* WDT_MODE_KEY */
+    wdt[0] = mode;
+
+    asm volatile("dsb sy\n"
+                 "isb sy"
+                 ::: "memory");
+}
+
 /* Accept both a normal Android boot image and MTK-wrapped kernel/rootfs data. */
 static int fastboot_resolve_component(const uint8_t **data, uint32_t *avail,
                                       const char *expected_name,
@@ -315,13 +347,13 @@ static void fastboot_boot_handler(const char *arg, void *data, unsigned sz) {
     ((lk_fastboot_ack_t)(uintptr_t)(g_lk_params.ptr_fastboot_okay | 1u))("");
     ((lk_udc_stop_t)(uintptr_t)(g_lk_params.ptr_udc_stop | 1u))();
 
-#if FASTBOOT_REENABLE_WDT
-    ((lk_wdt_init_t)(uintptr_t)(g_lk_params.ptr_mtk_wdt_init | 1u))();
-#else
-    /* Keep the watchdog disabled immediately before kernel entry. */
-    ((lk_mtk_wdt_disable_t)(uintptr_t)
-        (g_lk_params.ptr_mtk_wdt_disable | 1u))();
-#endif
+    /*
+     * Stop the LK watchdog independently of the reverse-engineered LK
+     * helper address.  Interrupts stay masked so the periodic fastboot WDT
+     * timer cannot call mtk_wdt_restart() after this point.
+     */
+    fastboot_mask_interrupts();
+    fastboot_disable_watchdog();
 
     /* Match the stock cmd_boot() order: WDT setup precedes mode reset. */
     ((volatile uint32_t *)(uintptr_t)g_lk_params.boot_mode_addr)[0] = 0;
