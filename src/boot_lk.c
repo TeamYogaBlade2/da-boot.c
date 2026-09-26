@@ -658,23 +658,38 @@ int run_lk_mode(serial_t *s, const soc_info_t *soc, const char *payload_path,
             return -1;
         }
 
+        const char *failed_symbol = NULL;
+
         if (extract_fastboot_init(lk_code, lk_content_size, lk_base,
-                                  &fastboot_init) != 0 ||
-            extract_fastboot_register(lk_code, lk_content_size, lk_base,
-                                      &fastboot_register) != 0 ||
-            extract_fastboot_fail(lk_code, lk_content_size, lk_base,
-                                  &fastboot_fail) != 0 ||
-            extract_fastboot_okay(lk_code, lk_content_size, lk_base,
-                                  &fastboot_okay) != 0 ||
-            extract_udc_stop(lk_code, lk_content_size, lk_base,
-                             fastboot_okay, &udc_stop) != 0 ||
-            extract_mtk_wdt_init(lk_code, lk_content_size, lk_base,
-                                 &mtk_wdt_init) != 0 ||
-            extract_mt_boot_init(lk_code, lk_content_size, lk_base,
-                                 &mt_boot_init) != 0 ||
-            extract_boot_mode_addr(lk_code, lk_content_size, lk_base,
-                                   &boot_mode_addr) != 0) {
-            fprintf(stderr, "Failed to extract LK fastboot symbols\n");
+                                  &fastboot_init) != 0) {
+            failed_symbol = "fastboot_init";
+        } else if (extract_fastboot_register(lk_code, lk_content_size,
+                                             lk_base, &fastboot_register) != 0) {
+            failed_symbol = "fastboot_register";
+        } else if (extract_fastboot_fail(lk_code, lk_content_size, lk_base,
+                                         &fastboot_fail) != 0) {
+            failed_symbol = "fastboot_fail";
+        } else if (extract_fastboot_okay(lk_code, lk_content_size, lk_base,
+                                         &fastboot_okay) != 0) {
+            failed_symbol = "fastboot_okay";
+        } else if (extract_udc_stop(lk_code, lk_content_size, lk_base,
+                                    fastboot_okay, &udc_stop) != 0) {
+            failed_symbol = "udc_stop";
+        } else if (extract_mtk_wdt_init(lk_code, lk_content_size, lk_base,
+                                        &mtk_wdt_init) != 0) {
+            failed_symbol = "mtk_wdt_init";
+        } else if (extract_mt_boot_init(lk_code, lk_content_size, lk_base,
+                                        &mt_boot_init) != 0) {
+            failed_symbol = "mt_boot_init";
+        } else if (extract_boot_mode_addr(lk_code, lk_content_size, lk_base,
+                                          &boot_mode_addr) != 0) {
+            failed_symbol = "boot_mode_addr";
+        }
+
+        if (failed_symbol) {
+            fprintf(stderr,
+                    "Failed to extract LK fastboot symbol: %s\n",
+                    failed_symbol);
             if (fastboot_bootimg_owned)
                 unlink(fastboot_bootimg_path);
             free(payload);
