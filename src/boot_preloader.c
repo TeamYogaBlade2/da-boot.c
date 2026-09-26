@@ -75,13 +75,6 @@ int run_preloader_mode(serial_t *s, const soc_info_t *soc, const char *payload_p
         return -1;
     }
 
-    if (input_count == 0 && jump_addr == 0) {
-        printf("DA is ready; no final jump requested\n");
-        free(pl_data);
-        free(payload);
-        return 0;
-    }
-
     // DA送信（Preloaderはアドレスを無視してCFG_DA_RAM_ADDRに配置）
     printf("Sending payload to 0x%x...\n", da_addr);
     if (mtk_send_da(s, da_addr, payload, payload_size) != 0) {
@@ -135,6 +128,13 @@ int run_preloader_mode(serial_t *s, const soc_info_t *soc, const char *payload_p
         free(pl_data);
         free(payload);
         return -1;
+    }
+
+    if (input_count == 0 && jump_addr == 0) {
+        printf("DA is ready; no final jump requested\n");
+        free(pl_data);
+        free(payload);
+        return 0;
     }
 
     // ファイルアップロード
