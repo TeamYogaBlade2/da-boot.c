@@ -779,7 +779,7 @@ uint32_t mt_part_generic_read_hook(void *dev, uint32_t read_cb,
                  * zero-filled tail here.
                  */
                 if (size > available &&
-                    size - available <= MT6589_LK_BOOTIMG_READ_SLACK) {
+                    size - available <= LK_BOOTIMG_READ_SLACK) {
                     uart_print("[mt_part_generic_read] replacing boot.img"
                                " with zero tail\n");
                     if (available)
