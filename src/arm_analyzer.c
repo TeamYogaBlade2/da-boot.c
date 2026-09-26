@@ -1904,43 +1904,72 @@ int extract_fastboot_okay(const uint8_t *data, uint32_t size, uint32_t base,
 }
 
 /*
- * Decode one Thumb-2 direct BL/BLX at an arbitrary instruction boundary.
+ * Decode one Thumb-2 direct BL at an arbitrary instruction boundary.
  *
- * LK mixes code and literal pools, so the main linear Capstone stream is not
- * a reliable source for tiny semantic anchors.  In addition, feeding only
- * the four bytes of a Thumb-2 instruction to a disassembler is enough for
- * an isolated call-site decode.
+ * LK mixes executable code and literal pools, so the main linear Capstone
+ * stream is not a reliable source for tiny semantic anchors.  Do not ask
+ * Capstone to decode a standalone four-byte fragment here either: direct
+ * Thumb BL has a fixed encoding and can be decoded exactly from the two
+ * halfwords.
  */
-static int decode_thumb_call_target(const uint8_t *data, uint32_t size,
-                                    uint32_t base, uint32_t offset,
-                                    csh handle, uint32_t *target)
+static int decode_thumb_bl_target(const uint8_t *data, uint32_t size,
+                                  uint32_t base, uint32_t offset,
+                                  uint32_t *target)
 {
-    cs_insn *insn = NULL;
-    size_t count;
-    uint32_t available;
+    uint16_t first_halfword;
+    uint16_t second_halfword;
+    uint32_t s;
+    uint32_t imm10;
+    uint32_t j1;
+    uint32_t j2;
+    uint32_t imm11;
+    uint32_t i1;
+    uint32_t i2;
+    uint32_t imm25;
+    uint32_t imm32;
+    uint32_t pc;
 
     if (!data || !target || offset > size || size - offset < 4)
         return -1;
 
-    available = size - offset;
-    if (available > 4)
-        available = 4;
+    first_halfword = (uint16_t)data[offset] |
+                     ((uint16_t)data[offset + 1] << 8);
+    second_halfword = (uint16_t)data[offset + 2] |
+                      ((uint16_t)data[offset + 3] << 8);
 
-    count = cs_disasm(handle, data + offset, available,
-                      base + offset, 1, &insn);
-    if (count != 1 || !insn ||
-        insn->size != 4 ||
-        !insn->detail ||
-        (insn->id != ARM_INS_BL && insn->id != ARM_INS_BLX) ||
-        insn->detail->arm.op_count < 1 ||
-        insn->detail->arm.operands[0].type != ARM_OP_IMM) {
-        if (insn)
-            cs_free(insn, count);
+    /*
+     * Thumb-2 BL:
+     *
+     *   first halfword : 11110 S imm10
+     *   second         : 11 J1 J2 imm11
+     *
+     * BLX has a different second-halfword prefix and is deliberately not
+     * accepted here; the LK fastboot call triplet consists of BL instructions.
+     */
+    if ((first_halfword & 0xf800u) != 0xf000u ||
+        (second_halfword & 0xf800u) != 0xf800u)
         return -1;
-    }
 
-    *target = (uint32_t)insn->detail->arm.operands[0].imm;
-    cs_free(insn, count);
+    s = (first_halfword >> 10) & 1u;
+    imm10 = first_halfword & 0x03ffu;
+    j1 = (second_halfword >> 13) & 1u;
+    j2 = (second_halfword >> 11) & 1u;
+    imm11 = second_halfword & 0x07ffu;
+
+    i1 = (~(j1 ^ s)) & 1u;
+    i2 = (~(j2 ^ s)) & 1u;
+
+    imm25 = (s << 24) |
+            (i1 << 23) |
+            (i2 << 22) |
+            (imm10 << 12) |
+            (imm11 << 1);
+
+    /* Sign-extend the 25-bit branch displacement. */
+    imm32 = imm25 | (s ? 0xfe000000u : 0u);
+
+    pc = base + offset + 4u;
+    *target = pc + imm32;
     return 0;
 }
 
@@ -1962,44 +1991,24 @@ static int find_thumb_call_triplet(const uint8_t *data, uint32_t size,
                                    uint32_t third_target,
                                    uint32_t *middle_target)
 {
-    csh handle;
-
     if (!data || !middle_target || size < 12)
         return -1;
 
-    if (cs_open(CS_ARCH_ARM, CS_MODE_THUMB, &handle) != CS_ERR_OK)
-        return -1;
-
-    if (cs_option(handle, CS_OPT_DETAIL, CS_OPT_ON) != CS_ERR_OK) {
-        cs_close(&handle);
-        return -1;
-    }
-
     for (uint32_t off = 0; off <= size - 12; off += 2) {
-        uint16_t first_halfword;
         uint32_t first;
         uint32_t middle;
         uint32_t third;
 
-        /*
-         * Thumb-2 BL/BLX starts with 11110xxxxx.  Avoid invoking Capstone
-         * on arbitrary data halfwords.
-         */
-        first_halfword = (uint16_t)data[off] |
-                         ((uint16_t)data[off + 1] << 8);
-        if ((first_halfword & 0xf800u) != 0xf000u)
-            continue;
-
-        if (decode_thumb_call_target(data, size, base, off, handle,
+        if (decode_thumb_bl_target(data, size, base, off,
                                      &first) != 0 ||
             first != first_target)
             continue;
 
-        if (decode_thumb_call_target(data, size, base, off + 4, handle,
+        if (decode_thumb_bl_target(data, size, base, off + 4,
                                      &middle) != 0)
             continue;
 
-        if (decode_thumb_call_target(data, size, base, off + 8, handle,
+        if (decode_thumb_bl_target(data, size, base, off + 8,
                                      &third) != 0 ||
             third != third_target)
             continue;
@@ -2013,11 +2022,9 @@ static int find_thumb_call_triplet(const uint8_t *data, uint32_t size,
                 "[analyzer] udc_stop: fastboot_okay=0x%08x "
                 "-> udc_stop=0x%08x -> mtk_wdt_init=0x%08x\n",
                 first, middle, third);
-        cs_close(&handle);
         return 0;
     }
 
-    cs_close(&handle);
     return -1;
 }
 
