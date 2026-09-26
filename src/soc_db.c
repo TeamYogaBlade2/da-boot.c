@@ -1,4 +1,5 @@
 #include "soc_db.h"
+#include "common.h"
 #include <string.h>
 #include <stddef.h>
 
@@ -8,10 +9,11 @@ const soc_info_t soc_mt6589 = {
     .dram_base = 0x80000000,
     .uart0_base = 0x11006000,
     .wdt_base = 0x10000000,
-    .wdt_reset_offset = 0x14,
-    .da_ram_addr = 0x80001000,
     .boot_arg_addr = 0x800A0000,
-    .part_t_startblk_offset = 12,
+    .payload_flags = PAYLOAD_FLAG_DISABLE_WDT,
+    .lk_kernel_addr = 0x80008000,
+    .lk_ramdisk_addr = 0x84000000,
+    .lk_fastboot_payload_min_addr = 0x88000000,
 };
 
 const soc_info_t soc_mt6572 = {
@@ -20,10 +22,7 @@ const soc_info_t soc_mt6572 = {
     .dram_base = 0x80000000,
     .uart0_base = 0x11005000,
     .wdt_base = 0x10000000,
-    .wdt_reset_offset = 0x14,
-    .da_ram_addr = 0x2001000,  // BootROM用に上書きされる
     .boot_arg_addr = 0x800A0000,
-    .part_t_startblk_offset = 12,
 };
 
 const soc_info_t soc_mt6582 = {
@@ -32,10 +31,7 @@ const soc_info_t soc_mt6582 = {
     .dram_base = 0x80000000,
     .uart0_base = 0x11002000,
     .wdt_base = 0x10000000,
-    .wdt_reset_offset = 0x14,
-    .da_ram_addr = 0x80001000,
     .boot_arg_addr = 0x800A0000,
-    .part_t_startblk_offset = 12,
 };
 
 const soc_info_t soc_mt6595 = {
@@ -44,10 +40,7 @@ const soc_info_t soc_mt6595 = {
     .dram_base = 0x40000000,
     .uart0_base = 0x11002000,
     .wdt_base = 0x10000000,
-    .wdt_reset_offset = 0x14,
-    .da_ram_addr = 0x80001000,
     .boot_arg_addr = 0x800A0000,
-    .part_t_startblk_offset = 12,
 };
 
 static const soc_info_t *soc_list[] = {

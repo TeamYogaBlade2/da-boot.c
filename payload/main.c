@@ -8,9 +8,6 @@
 #include "usb.h"
 #include "common.h"
 
-// UART (MT6589: 0x11006000)
-#define UART0_BASE 0x11006000
-
 __attribute__((section(".params"), used, aligned(4)))
 payload_params_t g_params = {
     .magic = MAGIC_DA,
@@ -29,8 +26,15 @@ static int g_has_preloader_params = 0;
 static int g_has_lk_params = 0;
 
 static void uart_putc(char c) {
-    volatile uint32_t *status = (volatile uint32_t*)(UART0_BASE + 0x14);
-    volatile uint32_t *data = (volatile uint32_t*)(UART0_BASE + 0x00);
+    uint32_t base = g_params.uart0_base;
+    volatile uint32_t *status;
+    volatile uint32_t *data;
+
+    if (!base)
+        return;
+
+    status = (volatile uint32_t *)(uintptr_t)(base + 0x14);
+    data = (volatile uint32_t *)(uintptr_t)(base + 0x00);
     for (uint32_t i = 0; i < 100000; i++) {
         if (*status & 0x20) {
             *data = c;
@@ -128,18 +132,7 @@ typedef void (*lk_fastboot_register_t)(const char *prefix,
 typedef void (*lk_mt_boot_init_t)(const void *app);
 typedef void (*lk_fastboot_ack_t)(const char *reason);
 typedef void (*lk_udc_stop_t)(void);
-typedef void (*lk_mtk_wdt_disable_t)(void);
-typedef void (*lk_wdt_init_t)(void);
 typedef int (*lk_boot_linux_from_storage_t)(void);
-
-
-/*
- * Stock MT6589 LK re-enables the watchdog in cmd_boot(), but a custom
- * fastboot-booted kernel may not initialize the MediaTek watchdog early
- * enough to prevent an immediate WDT reset. Keep it disabled by default;
- * set to 1 to retain stock behavior while debugging.
- */
-#define FASTBOOT_REENABLE_WDT      0
 
 static void fastboot_boot_fail(const char *reason) {
     lk_fastboot_ack_t fail =
@@ -167,8 +160,11 @@ static void fastboot_mask_interrupts(void) {
 }
 
 static void fastboot_disable_watchdog(void) {
+    if (!g_params.wdt_base)
+        return;
+
     volatile uint32_t * const wdt =
-        (volatile uint32_t *)(uintptr_t)0x10000000u;
+        (volatile uint32_t *)(uintptr_t)g_params.wdt_base;
     uint32_t mode = wdt[0];
 
     mode &= ~1u;       /* WDT_MODE_EN */
@@ -331,16 +327,13 @@ void payload_bootstrap(uint32_t runtime_base) {
     payload_params_t *params = &g_params;
 
     /*
-     * The MT6589 Preloader leaves the TOPRGU watchdog enabled when its
+     * Some Preloaders leave the watchdog enabled when their
      * D5/JUMP_DA path hands control to the payload. Disable it before the
      * relocation/stack setup can be reset underneath us.
-     *
-     * The payload-side soc enum mirrors include/da_params.h:
-     * SOC_MT6589 == 3.
      */
-    if (params->soc == 3u) {
+    if ((params->flags & PAYLOAD_FLAG_DISABLE_WDT) && params->wdt_base) {
         volatile uint32_t * const wdt =
-            (volatile uint32_t *)0x10000000u;
+            (volatile uint32_t *)(uintptr_t)params->wdt_base;
         uint32_t mode;
 
         wdt[2] = 0x1971u; /* WDT_RST */

@@ -4,8 +4,9 @@
 #include <stdint.h>
 
 #define MAGIC_DA        0xDAB001
-#define CURRENT_VERSION 1
+#define CURRENT_VERSION 2
 #define MAX_BLACKLIST   12
+#define PAYLOAD_FLAG_DISABLE_WDT (1u << 0)
 
 typedef struct {
     uint32_t start;
@@ -30,7 +31,9 @@ typedef struct {
     blacklist_range_t blacklist[MAX_BLACKLIST];
     uint32_t ptr_dl;
     uint32_t ptr_ul;
-    uint32_t soc;
+    uint32_t uart0_base;
+    uint32_t wdt_base;
+    uint32_t flags;
 } payload_params_t;
 
 typedef struct {
@@ -60,6 +63,6 @@ _Static_assert(sizeof(lk_runner_params_t) == 60,
 
 #define LK_PARAMS_WIRE_SIZE (2u + sizeof(lk_runner_params_t))
 
-#define MT6589_LK_BOOTIMG_READ_SLACK 0x1000u
+#define LK_BOOTIMG_READ_SLACK 0x1000u
 
 #endif // DA_COMMON_H

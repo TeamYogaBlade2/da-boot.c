@@ -57,7 +57,8 @@ int inject_params(uint8_t *payload, uint32_t payload_size,
 
 // PayloadParams 初期化
 void payload_params_init(payload_params_t *p, uint32_t mem_start, uint32_t mem_end,
-                         uint32_t dl, uint32_t ul, soc_type_t soc) {
+                         uint32_t dl, uint32_t ul, uint32_t uart0_base,
+                         uint32_t wdt_base, uint32_t flags) {
     memset(p, 0, sizeof(*p));
     p->magic = MAGIC_DA;
     p->version = CURRENT_VERSION;
@@ -65,7 +66,9 @@ void payload_params_init(payload_params_t *p, uint32_t mem_start, uint32_t mem_e
     p->memory.end = mem_end;
     p->ptr_dl = dl;
     p->ptr_ul = ul;
-    p->soc = soc;
+    p->uart0_base = uart0_base;
+    p->wdt_base = wdt_base;
+    p->flags = flags;
     for (int i = 0; i < MAX_BLACKLIST; i++) {
         p->blacklist[i].mode = BLACKLIST_NONE;
     }

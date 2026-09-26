@@ -20,28 +20,6 @@
 #define MTK_IMAGE_ALIGN_SIZE  0x10u
 #define MTK_BOOT_PAGE_ALIGN(size) (((size) + 0x7ffu) & ~0x7ffu)
 
-/* Fixed load addresses used by the Blade 10 KitKat LK. */
-#define MT6589_LK_KERNEL_ADDR  0x80008000u
-#define MT6589_LK_RAMDISK_ADDR 0x84000000u
-
-#define MT6589_LK_MACHTYPE                 0x19bdu
-
-/*
- * Keep the resident DA out of all fixed low-memory addresses used by the
- * MT6589 KitKat fastboot/LK path:
- *   0x80008000  kernel
- *   0x84000000  ramdisk
- *   0x85000000  fastboot download scratch
- *   0x81e00000  LK
- *   0x800a0000  boot argument
- *
- * The payload is initially staged at 0x80001000. Without this reservation
- * its relocation logic deliberately leaves the payload there because the
- * first free range overlaps the running image. A later fastboot boot then
- * overwrites part of the resident DA with the kernel/ramdisk.
- */
-#define MT6589_FASTBOOT_PAYLOAD_MIN_ADDR  0x88000000u
-
 typedef struct __attribute__((packed)) {
     uint32_t magic;
     uint32_t data_size;
@@ -251,10 +229,10 @@ static int pad_lk_bootimg_read_window(uint8_t **data, uint32_t *size) {
     uint8_t *padded;
 
     if (!data || !*data || !size ||
-        *size > UINT32_MAX - MT6589_LK_BOOTIMG_READ_SLACK)
+        *size > UINT32_MAX - LK_BOOTIMG_READ_SLACK)
         return -1;
 
-    padded_size = *size + MT6589_LK_BOOTIMG_READ_SLACK;
+    padded_size = *size + LK_BOOTIMG_READ_SLACK;
     padded = calloc(1, padded_size);
     if (!padded)
         return -1;
@@ -352,7 +330,7 @@ static int reserve_payload_range(payload_params_t *params,
     return -1;
 }
 
-// boot_arg構造体 (MT6589)
+// MediaTek boot_arg 構造体
 typedef struct {
     uint32_t magic;
     uint32_t boot_mode;
@@ -376,13 +354,14 @@ typedef struct {
 
 #define BOOT_ARG_MAGIC 0x504c504c
 
-static void boot_arg_init(boot_arg_t *ba, uint32_t dram_size_per_rank,
+static void boot_arg_init(boot_arg_t *ba, uint32_t uart0_base,
+                          uint32_t dram_size_per_rank,
                           uint32_t dram_ranks, uint32_t lk_mode) {
     memset(ba, 0, sizeof(*ba));
     ba->magic = BOOT_ARG_MAGIC;
     ba->boot_mode = lk_mode;
     ba->e_flag = 0;
-    ba->log_port = 0x11006000; // MT6589 UART0
+    ba->log_port = uart0_base;
     ba->log_baudrate = 921600;
     ba->log_enable = 1;
     ba->dram_rank_num = dram_ranks;
@@ -401,6 +380,17 @@ int run_lk_mode(serial_t *s, const soc_info_t *soc, const char *payload_path,
                 uint32_t dram_size_per_rank, uint32_t dram_ranks,
                 uint32_t lk_mode) {
     printf("LK mode for %s\n", soc->name);
+
+    if (!soc->lk_kernel_addr || !soc->lk_ramdisk_addr) {
+        fprintf(stderr, "LK mode is not configured for %s\n", soc->name);
+        return -1;
+    }
+    if (lk_mode == LK_BOOT_FASTBOOT &&
+        !soc->lk_fastboot_payload_min_addr) {
+        fprintf(stderr, "LK fastboot mode is not configured for %s\n",
+                soc->name);
+        return -1;
+    }
 
     if (soc->hw_code != soc_mt6589.hw_code) {
         fprintf(stderr, "LK mode currently supports MT6589 only\n");
@@ -515,7 +505,8 @@ int run_lk_mode(serial_t *s, const soc_info_t *soc, const char *payload_path,
     payload_params_t params;
     payload_params_init(&params, soc->dram_base,
                         soc->dram_base + (uint32_t)dram_size,
-                        ptr_dl, ptr_ul, SOC_MT6589);
+                        ptr_dl, ptr_ul, soc->uart0_base,
+                        soc->wdt_base, soc->payload_flags);
 
     const uint32_t boot_arg_addr = soc->boot_arg_addr;
     const uint32_t boot_arg_size = sizeof(boot_arg_t);
@@ -545,30 +536,28 @@ int run_lk_mode(serial_t *s, const soc_info_t *soc, const char *payload_path,
     if (lk_mode == LK_BOOT_FASTBOOT) {
         uint64_t dram_end = (uint64_t)soc->dram_base + dram_size;
 
-        if ((uint64_t)MT6589_FASTBOOT_PAYLOAD_MIN_ADDR > dram_end) {
+        if ((uint64_t)soc->lk_fastboot_payload_min_addr > dram_end) {
             fprintf(stderr,
-                    "Insufficient DRAM for the MT6589 fastboot payload relocation "
+                    "Insufficient DRAM for the fastboot payload relocation "
                     "(need >= 0x%x)\n",
-                    MT6589_FASTBOOT_PAYLOAD_MIN_ADDR);
+                    soc->lk_fastboot_payload_min_addr);
             free(payload);
-            free(pl_data);
             free(lk_data);
             return -1;
         }
 
         if (reserve_payload_range(&params, soc->dram_base,
-                                  MT6589_FASTBOOT_PAYLOAD_MIN_ADDR) != 0) {
+                                  soc->lk_fastboot_payload_min_addr) != 0) {
             fprintf(stderr, "Failed to reserve fastboot payload range\n");
             free(payload);
-            free(pl_data);
             free(lk_data);
             return -1;
         }
 
         printf("Reserving 0x%x-0x%x for fastboot fixed addresses; "
                "DA will relocate above 0x%x\n",
-               soc->dram_base, MT6589_FASTBOOT_PAYLOAD_MIN_ADDR,
-               MT6589_FASTBOOT_PAYLOAD_MIN_ADDR);
+               soc->dram_base, soc->lk_fastboot_payload_min_addr,
+               soc->lk_fastboot_payload_min_addr);
     }
 
     if (inject_params(payload, payload_size, &params) != 0) {
@@ -760,7 +749,8 @@ int run_lk_mode(serial_t *s, const soc_info_t *soc, const char *payload_path,
         }
 
         boot_arg_t boot_arg;
-        boot_arg_init(&boot_arg, dram_size_per_rank, dram_ranks, lk_mode);
+        boot_arg_init(&boot_arg, soc->uart0_base,
+                      dram_size_per_rank, dram_ranks, lk_mode);
         printf("Uploading boot arg to 0x%x...\n", boot_arg_addr);
         if (upload_buffer(&proto, s, boot_arg_addr,
                           (const uint8_t *)&boot_arg, boot_arg_size,
@@ -908,8 +898,8 @@ int run_lk_mode(serial_t *s, const soc_info_t *soc, const char *payload_path,
          * boot argument at 0x800a0000 intentionally lives inside the
          * kernel destination range and must still be uploaded.
          */
-        message_init_reserve_range(&msg, MT6589_LK_KERNEL_ADDR,
-                                   MT6589_LK_KERNEL_ADDR +
+        message_init_reserve_range(&msg, soc->lk_kernel_addr,
+                                   soc->lk_kernel_addr +
                                    MTK_BOOT_PAGE_ALIGN(kernel_size));
         if (protocol_send_message(&proto, &msg) != 0 ||
             protocol_read_response(&proto, &resp) != 0 ||
@@ -922,8 +912,8 @@ int run_lk_mode(serial_t *s, const soc_info_t *soc, const char *payload_path,
             return -1;
         }
 
-        message_init_reserve_range(&msg, MT6589_LK_RAMDISK_ADDR,
-                                   MT6589_LK_RAMDISK_ADDR +
+        message_init_reserve_range(&msg, soc->lk_ramdisk_addr,
+                                   soc->lk_ramdisk_addr +
                                    MTK_BOOT_PAGE_ALIGN(ramdisk_size));
         if (protocol_send_message(&proto, &msg) != 0 ||
             protocol_read_response(&proto, &resp) != 0 ||
