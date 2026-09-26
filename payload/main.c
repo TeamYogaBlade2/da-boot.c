@@ -728,7 +728,8 @@ uint32_t mt_part_generic_read_hook(void *dev, uint32_t read_cb,
     if (!orig) orig = (void*)g_lk_params.ptr_mt_part_generic_read;
 
     // mt_part_get_partition を呼び出し
-    uint32_t (*get_part)(const char*) = (void*)g_lk_params.ptr_mt_part_get_partition;
+    uint32_t (*get_part)(const char*) =
+        (void *)(uintptr_t)(g_lk_params.ptr_mt_part_get_partition | 1u);
     uint32_t *part = (uint32_t*)get_part("BOOTIMG");
     if (!part) {
         part = (uint32_t*)get_part("boot");
