@@ -1929,7 +1929,8 @@ static int decode_thumb_bl_target(const uint8_t *data, uint32_t size,
     uint32_t imm32;
     uint32_t pc;
 
-    if (!data || !target || offset > size || size - offset < 4)
+    if (!data || !target || (offset & 1u) ||
+        offset > size || size - offset < 4)
         return -1;
 
     first_halfword = (uint16_t)data[offset] |
@@ -1946,8 +1947,18 @@ static int decode_thumb_bl_target(const uint8_t *data, uint32_t size,
      * BLX has a different second-halfword prefix and is deliberately not
      * accepted here; the LK fastboot call triplet consists of BL instructions.
      */
+    /*
+     * Thumb-2 BL:
+     *
+     *   first  = 11110 S imm10
+     *   second = 11 J1 J2 1 imm11
+     *
+     * Bit 11 of the second halfword is J2, so it is not fixed.
+     * 0xf800 was therefore too strict and rejected valid BLs with J2=0.
+     * 0xd000 checks only the fixed bits and excludes BLX(immediate).
+     */
     if ((first_halfword & 0xf800u) != 0xf000u ||
-        (second_halfword & 0xf800u) != 0xf800u)
+        (second_halfword & 0xd000u) != 0xd000u)
         return -1;
 
     s = (first_halfword >> 10) & 1u;
@@ -1973,6 +1984,90 @@ static int decode_thumb_bl_target(const uint8_t *data, uint32_t size,
     return 0;
 }
 
+static int thumb_code_address_equal(uint32_t lhs, uint32_t rhs)
+{
+    return (lhs & ~1u) == (rhs & ~1u);
+}
+
+static int capstone_bl_target(const cs_insn *insn, uint32_t *target)
+{
+    if (!insn || !target || insn->id != ARM_INS_BL || !insn->detail ||
+        insn->detail->arm.op_count < 1 ||
+        insn->detail->arm.operands[0].type != ARM_OP_IMM)
+        return -1;
+
+    *target = (uint32_t)insn->detail->arm.operands[0].imm;
+    return 0;
+}
+
+/*
+ * Do a bounded Capstone decode at each Thumb halfword boundary.
+ *
+ * This is deliberately not open_analysis(): LK contains interleaved code
+ * and data/literal pools, so the global linear stream can lose sync.
+ */
+static int find_thumb_call_triplet_capstone(const uint8_t *data, uint32_t size,
+                                            uint32_t base,
+                                            uint32_t first_target,
+                                            uint32_t third_target,
+                                            uint32_t *middle_target)
+{
+    csh handle;
+
+    if (!data || !middle_target || size < 12 ||
+        cs_open(CS_ARCH_ARM, CS_MODE_THUMB, &handle) != CS_ERR_OK)
+        return -1;
+
+    if (cs_option(handle, CS_OPT_DETAIL, CS_OPT_ON) != CS_ERR_OK) {
+        cs_close(&handle);
+        return -1;
+    }
+
+    for (uint32_t off = 0; off <= size - 12; off += 2) {
+        cs_insn *insn = NULL;
+        uint32_t first;
+        uint32_t middle;
+        uint32_t third;
+        size_t count;
+
+        count = cs_disasm(handle, data + off, 12, base + off, 3, &insn);
+        if (count != 3 || !insn ||
+            insn[0].size != 4 || insn[1].size != 4 || insn[2].size != 4 ||
+            capstone_bl_target(&insn[0], &first) != 0 ||
+            capstone_bl_target(&insn[1], &middle) != 0 ||
+            capstone_bl_target(&insn[2], &third) != 0) {
+            if (insn)
+                cs_free(insn, count);
+            continue;
+        }
+
+        if (!thumb_code_address_equal(first, first_target) ||
+            !thumb_code_address_equal(third, third_target)) {
+            cs_free(insn, count);
+            continue;
+        }
+
+        if ((uint64_t)(middle & ~1u) < (uint64_t)base ||
+            (uint64_t)(middle & ~1u) >= (uint64_t)base + size) {
+            cs_free(insn, count);
+            continue;
+        }
+
+        *middle_target = middle;
+        fprintf(stderr,
+                "[analyzer] udc_stop: Capstone fallback found callsite=0x%08x "
+                "fastboot_okay=0x%08x -> udc_stop=0x%08x -> "
+                "mtk_wdt_init=0x%08x\n",
+                base + off, first, middle, third);
+        cs_free(insn, count);
+        cs_close(&handle);
+        return 0;
+    }
+
+    cs_close(&handle);
+    return -1;
+}
+
 /*
  * Find:
  *
@@ -1994,23 +2089,31 @@ static int find_thumb_call_triplet(const uint8_t *data, uint32_t size,
     if (!data || !middle_target || size < 12)
         return -1;
 
+    unsigned third_target_hits = 0;
+
     for (uint32_t off = 0; off <= size - 12; off += 2) {
         uint32_t first;
         uint32_t middle;
         uint32_t third;
 
-        if (decode_thumb_bl_target(data, size, base, off,
-                                     &first) != 0 ||
-            first != first_target)
+        /*
+         * Anchor on mtk_wdt_init first. It has very few direct callers in
+         * this LK, unlike fastboot_okay().
+         */
+        if (decode_thumb_bl_target(data, size, base, off + 8,
+                                   &third) != 0 ||
+            !thumb_code_address_equal(third, third_target))
             continue;
+
+        third_target_hits++;
 
         if (decode_thumb_bl_target(data, size, base, off + 4,
-                                     &middle) != 0)
+                                   &middle) != 0)
             continue;
 
-        if (decode_thumb_bl_target(data, size, base, off + 8,
-                                     &third) != 0 ||
-            third != third_target)
+        if (decode_thumb_bl_target(data, size, base, off,
+                                   &first) != 0 ||
+            !thumb_code_address_equal(first, first_target))
             continue;
 
         if ((uint64_t)(middle & ~1u) < (uint64_t)base ||
@@ -2024,6 +2127,23 @@ static int find_thumb_call_triplet(const uint8_t *data, uint32_t size,
                 first, middle, third);
         return 0;
     }
+
+    if (third_target_hits) {
+        fprintf(stderr,
+                "[analyzer] udc_stop: raw Thumb scan found %u "
+                "mtk_wdt_init callsite(s), but none matched "
+                "fastboot_okay -> candidate -> mtk_wdt_init\n",
+                third_target_hits);
+    } else {
+        fprintf(stderr,
+                "[analyzer] udc_stop: raw Thumb scan found no "
+                "mtk_wdt_init callsite\n");
+    }
+
+    if (find_thumb_call_triplet_capstone(data, size, base,
+                                         first_target, third_target,
+                                         middle_target) == 0)
+        return 0;
 
     return -1;
 }
