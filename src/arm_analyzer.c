@@ -1764,16 +1764,6 @@ int extract_fastboot_init(const uint8_t *data, uint32_t size, uint32_t base,
                                        "fastboot_init()\n", addr);
 }
 
-int extract_mtk_wdt_init(const uint8_t *data, uint32_t size, uint32_t base,
-                         uint32_t *addr)
-{
-    if (try_function_by_string_mode(data, size, base, 1,
-                                    "UB wdt init\n", addr) == 0)
-        return 0;
-    return try_function_by_string_mode(data, size, base, 0,
-                                       "UB wdt init\n", addr);
-}
-
 int extract_fastboot_register(const uint8_t *data, uint32_t size,
                               uint32_t base, uint32_t *addr)
 {

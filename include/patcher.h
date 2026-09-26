@@ -21,8 +21,6 @@ int extract_fastboot_init(const uint8_t *data, uint32_t size, uint32_t base,
                           uint32_t *addr);
 int extract_fastboot_register(const uint8_t *data, uint32_t size, uint32_t base,
                               uint32_t *addr);
-int extract_mtk_wdt_init(const uint8_t *data, uint32_t size, uint32_t base,
-                         uint32_t *addr);
 int extract_fastboot_fail(const uint8_t *data, uint32_t size, uint32_t base,
                           uint32_t *addr);
 int extract_fastboot_okay(const uint8_t *data, uint32_t size, uint32_t base,

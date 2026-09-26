@@ -128,11 +128,8 @@ int protocol_send_message(protocol_t *p, const message_t *msg) {
                 memcpy(&buf[len], &msg->set_params.lk.ptr_fastboot_okay, 4); len += 4;
                 memcpy(&buf[len], &msg->set_params.lk.ptr_fastboot_fail, 4); len += 4;
                 memcpy(&buf[len], &msg->set_params.lk.ptr_udc_stop, 4); len += 4;
-                memcpy(&buf[len], &msg->set_params.lk.ptr_mtk_wdt_disable, 4); len += 4;
-                memcpy(&buf[len], &msg->set_params.lk.ptr_mtk_wdt_init, 4); len += 4;
                 memcpy(&buf[len], &msg->set_params.lk.ptr_boot_linux_from_storage, 4); len += 4;
                 memcpy(&buf[len], &msg->set_params.lk.boot_mode_addr, 4); len += 4;
-                memcpy(&buf[len], &msg->set_params.lk.machtype, 4); len += 4;
             } else {
                 return -1;
             }
@@ -219,11 +216,8 @@ int protocol_read_message(protocol_t *p, message_t *msg) {
                 memcpy(&msg->set_params.lk.ptr_fastboot_okay, &p->buf[off], 4); off += 4;
                 memcpy(&msg->set_params.lk.ptr_fastboot_fail, &p->buf[off], 4); off += 4;
                 memcpy(&msg->set_params.lk.ptr_udc_stop, &p->buf[off], 4); off += 4;
-                memcpy(&msg->set_params.lk.ptr_mtk_wdt_disable, &p->buf[off], 4); off += 4;
-                memcpy(&msg->set_params.lk.ptr_mtk_wdt_init, &p->buf[off], 4); off += 4;
                 memcpy(&msg->set_params.lk.ptr_boot_linux_from_storage, &p->buf[off], 4); off += 4;
                 memcpy(&msg->set_params.lk.boot_mode_addr, &p->buf[off], 4); off += 4;
-                memcpy(&msg->set_params.lk.machtype, &p->buf[off], 4); off += 4;
             }
             break;
         default:

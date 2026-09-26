@@ -1,6 +1,5 @@
 #include "soc_db.h"
 #include "common.h"
-#include <string.h>
 #include <stddef.h>
 
 const soc_info_t soc_mt6589 = {
@@ -54,13 +53,6 @@ static const soc_info_t *soc_list[] = {
 const soc_info_t *soc_get_by_hw_code(uint16_t hw_code) {
     for (int i = 0; soc_list[i]; i++) {
         if (soc_list[i]->hw_code == hw_code) return soc_list[i];
-    }
-    return NULL;
-}
-
-const soc_info_t *soc_get_by_name(const char *name) {
-    for (int i = 0; soc_list[i]; i++) {
-        if (strcmp(soc_list[i]->name, name) == 0) return soc_list[i];
     }
     return NULL;
 }

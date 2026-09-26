@@ -17,7 +17,6 @@ typedef struct soc_info {
 } soc_info_t;
 
 const soc_info_t *soc_get_by_hw_code(uint16_t hw_code);
-const soc_info_t *soc_get_by_name(const char *name);
 
 // 定義済みSoC
 extern const soc_info_t soc_mt6589;

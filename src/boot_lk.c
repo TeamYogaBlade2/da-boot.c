@@ -625,7 +625,6 @@ int run_lk_mode(serial_t *s, const soc_info_t *soc, const char *payload_path,
         uint32_t fastboot_okay = 0;
         uint32_t fastboot_fail = 0;
         uint32_t udc_stop = 0;
-        uint32_t mtk_wdt_init = 0;
         uint32_t mt_boot_init = 0;
         uint32_t boot_mode_addr = 0;
 
@@ -656,9 +655,6 @@ int run_lk_mode(serial_t *s, const soc_info_t *soc, const char *payload_path,
         } else if (extract_udc_stop(lk_code, lk_content_size, lk_base,
                                     fastboot_okay, &udc_stop) != 0) {
             failed_symbol = "udc_stop";
-        } else if (extract_mtk_wdt_init(lk_code, lk_content_size, lk_base,
-                                        &mtk_wdt_init) != 0) {
-            failed_symbol = "mtk_wdt_init";
         } else if (extract_mt_boot_init(lk_code, lk_content_size, lk_base,
                                         &mt_boot_init) != 0) {
             failed_symbol = "mt_boot_init";
@@ -683,7 +679,6 @@ int run_lk_mode(serial_t *s, const soc_info_t *soc, const char *payload_path,
         printf("LK fastboot_okay: 0x%x\n", fastboot_okay);
         printf("LK fastboot_fail: 0x%x\n", fastboot_fail);
         printf("LK udc_stop: 0x%x\n", udc_stop);
-        printf("LK mtk_wdt_init: 0x%x\n", mtk_wdt_init);
         printf("LK mt_boot_init: 0x%x\n", mt_boot_init);
         printf("LK boot_mode_addr: 0x%x\n", boot_mode_addr);
 
@@ -694,14 +689,10 @@ int run_lk_mode(serial_t *s, const soc_info_t *soc, const char *payload_path,
         lk_params.ptr_fastboot_okay = fastboot_okay;
         lk_params.ptr_fastboot_fail = fastboot_fail;
         lk_params.ptr_udc_stop = udc_stop;
-        /* The payload disables the watchdog itself before the handoff, so
-         * the legacy mtk_wdt_disable callback field intentionally stays 0. */
-        lk_params.ptr_mtk_wdt_init = mtk_wdt_init;
         lk_params.ptr_mt_part_generic_read = mt_part_generic_read | 1u;
         lk_params.ptr_mt_part_get_partition = mt_part_get_partition | 1u;
         lk_params.ptr_boot_linux_from_storage = boot_linux_from_storage | 1u;
         lk_params.boot_mode_addr = boot_mode_addr;
-        lk_params.machtype = MT6589_LK_MACHTYPE;
 
         message_init_set_params_lk(&msg, &lk_params);
         if (protocol_send_message(&proto, &msg) != 0 ||
