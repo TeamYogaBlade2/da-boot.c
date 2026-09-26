@@ -854,6 +854,14 @@ static int find_function_range(const arm_analysis_t *a, size_t ref_idx,
 
             if (is_block_terminator(&a->insn[prev]))
                 break;
+            /*
+             * Do not cross alignment/padding NOPs between functions.
+             * Otherwise a function with a short literal/GOT prelude can
+             * incorrectly absorb the preceding function's padding NOP as
+             * its entry point.
+             */
+            if (a->insn[prev].id == ARM_INS_NOP)
+                break;
 
             entry = prev;
         }
