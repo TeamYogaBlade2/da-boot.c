@@ -1394,27 +1394,46 @@ static int try_lk_base_mode(const uint8_t *data, uint32_t size, uint32_t base,
         return -1;
 
     for (size_t p = 0; p < sizeof(patterns) / sizeof(patterns[0]); p++) {
-        const uint8_t *found = find_string(data, size, patterns[p]);
-        if (!found)
-            continue;
+        uint32_t search_off = 0;
+        uint32_t pat_len = (uint32_t)strlen(patterns[p]);
 
-        uint32_t str_va = base + (uint32_t)(found - data);
-        for (size_t ref = 0; ref < a.count; ref++) {
-            if (!instruction_refers_to(&a, &a.insn[ref], str_va))
-                continue;
+        while (pat_len && search_off <= size - pat_len) {
+            const uint8_t *found;
+            uint32_t str_va;
 
-            size_t begin, end;
-            if (find_function_range(&a, ref, &begin, &end) != 0)
-                continue;
+            found = find_string_from(data, size, patterns[p], search_off);
+            if (!found)
+                break;
 
-            reg_value_t r3 = resolve_reg_before(&a, begin, ref, 3, 0);
-            if (value_is_full(r3) && r3.value >= 0x80000000u) {
+            search_off = (uint32_t)(found - data) + 1;
+            str_va = base + (uint32_t)(found - data);
+
+            fprintf(stderr,
+                    "[analyzer] lk_base: found string at +0x%x, mode=%s\n",
+                    (unsigned)(found - data), thumb ? "Thumb" : "ARM");
+
+            for (size_t ref = 0; ref < a.count; ref++) {
+                size_t begin, end;
+                reg_value_t r3;
+
+                if (!instruction_refers_to(&a, &a.insn[ref], str_va))
+                    continue;
+
+                if (find_function_range(&a, ref, &begin, &end) != 0)
+                    continue;
+
+                r3 = resolve_reg_before(&a, begin, ref, 3, 0);
+                if (!value_is_full(r3) || r3.value < 0x80000000u)
+                    continue;
+
                 *lk_base = r3.value;
+                fprintf(stderr,
+                        "[analyzer] lk_base: xref=0x%08x "
+                        "r3=0x%08x\n",
+                        (uint32_t)a.insn[ref].address, r3.value);
                 close_analysis(&a);
                 return 0;
             }
-
-            (void)end;
         }
     }
 
