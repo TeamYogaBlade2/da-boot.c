@@ -73,6 +73,46 @@ static void print_usage(const char *prog) {
     printf("  %s -p preloader.bin repl\n", prog);
 }
 
+/*
+ * Some patched MT6572 preloaders can leave the first connection in a state
+ * where GET_HW_CODE fails once even though the device is otherwise usable.
+ * The upstream implementation recovers by reopening the serial port,
+ * discarding the stale preloader banner, and repeating the handshake.
+ *
+ * Keep this as a single bounded retry: normal MT6589 operation is unchanged,
+ * while a transient/patched-preloader failure gets the upstream workaround.
+ */
+static int get_hw_code_with_retry(serial_t *s, const char *port_name,
+                                  uint16_t *hw_code)
+{
+    if (mtk_get_hw_code(s, hw_code) == 0)
+        return 0;
+
+    fprintf(stderr,
+            "HW code read failed; reopening the port and retrying...\n");
+
+    serial_close(s);
+    s->fd = serial_open(port_name, B921600);
+    if (s->fd < 0)
+        return -1;
+
+    /*
+     * Drop the stale READY/banner bytes left by the preloader before
+     * restarting the MediaTek handshake.
+     */
+    if (serial_flush(s) != 0) {
+        serial_close(s);
+        return -1;
+    }
+
+    if (mtk_handshake(s) != 0) {
+        serial_close(s);
+        return -1;
+    }
+
+    return mtk_get_hw_code(s, hw_code);
+}
+
 static int parse_u32(const char *text, uint32_t *value) {
     char *end;
     unsigned long long v;
@@ -400,7 +440,7 @@ int main(int argc, char *argv[]) {
 
     // HWコード取得
     uint16_t hw_code;
-    if (mtk_get_hw_code(&serial, &hw_code) != 0) {
+    if (get_hw_code_with_retry(&serial, port_name, &hw_code) != 0) {
         fprintf(stderr, "Failed to get HW code\n");
         serial_close(&serial);
         exit(1);
