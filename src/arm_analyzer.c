@@ -1866,44 +1866,68 @@ int extract_fastboot_okay(const uint8_t *data, uint32_t size, uint32_t base,
 }
 
 /*
- * Decode one Thumb-2 direct BL/BLX at an arbitrary instruction boundary.
+ * Decode one Thumb-2 direct BL at an arbitrary halfword boundary.
  *
- * open_analysis() intentionally performs a linear decode of the whole
- * image, but LK mixes code and literal pools.  A valid data word can
- * therefore make that linear stream lose synchronization and hide a real
- * instruction sequence.  For small semantic anchors, decode individual
- * instructions from their possible 2-byte boundaries instead.
+ * LK mixes code and literal pools, so the main linear Capstone stream is not
+ * a reliable source for tiny semantic anchors.  In addition, feeding only
+ * the four bytes of a Thumb-2 instruction to a disassembler is unnecessary
+ * here: BL has a simple architectural immediate encoding and can be decoded
+ * directly.
  */
-static int decode_thumb_call_target(const uint8_t *data, uint32_t size,
-                                    uint32_t base, uint32_t offset,
-                                    csh handle, uint32_t *target)
+static int decode_thumb_bl_target(const uint8_t *data, uint32_t size,
+                                  uint32_t base, uint32_t offset,
+                                  uint32_t *target)
 {
-    cs_insn *insn = NULL;
-    size_t count;
-    uint32_t available;
+    uint16_t first;
+    uint16_t second;
+    uint32_t s;
+    uint32_t j1;
+    uint32_t j2;
+    uint32_t i1;
+    uint32_t i2;
+    uint32_t imm25;
+    int32_t displacement;
 
-    if (!data || !target || offset > size || size - offset < 4)
+    if (!data || !target || (offset & 1u) ||
+        offset > size || size - offset < 4)
         return -1;
 
-    available = size - offset;
-    if (available > 4)
-        available = 4;
+    first = (uint16_t)data[offset] |
+            ((uint16_t)data[offset + 1] << 8);
+    second = (uint16_t)data[offset + 2] |
+             ((uint16_t)data[offset + 3] << 8);
 
-    count = cs_disasm(handle, data + offset, available,
-                      base + offset, 1, &insn);
-    if (count != 1 || !insn ||
-        insn->size != 4 ||
-        !insn->detail ||
-        (insn->id != ARM_INS_BL && insn->id != ARM_INS_BLX) ||
-        insn->detail->arm.op_count < 1 ||
-        insn->detail->arm.operands[0].type != ARM_OP_IMM) {
-        if (insn)
-            cs_free(insn, count);
+    /*
+     * Thumb-2 BL:
+     *
+     *   first  = 11110 S imm10
+     *   second = 11 J1 J2 1 imm11
+     *
+     * The 0xd000 mask on the second halfword also excludes BLX(immediate).
+     */
+    if ((first & 0xf800u) != 0xf000u ||
+        (second & 0xd000u) != 0xd000u)
         return -1;
-    }
 
-    *target = (uint32_t)insn->detail->arm.operands[0].imm;
-    cs_free(insn, count);
+    s = (first >> 10) & 1u;
+    j1 = (second >> 13) & 1u;
+    j2 = (second >> 11) & 1u;
+
+    i1 = (~(j1 ^ s)) & 1u;
+    i2 = (~(j2 ^ s)) & 1u;
+
+    imm25 = (s << 24) |
+            (i1 << 23) |
+            (i2 << 22) |
+            ((uint32_t)(first & 0x03ffu) << 12) |
+            ((uint32_t)(second & 0x07ffu) << 1);
+
+    /* Sign-extend the 25-bit signed branch displacement. */
+    displacement = (int32_t)imm25;
+    if (imm25 & 0x01000000u)
+        displacement |= (int32_t)0xfe000000u;
+
+    *target = base + offset + 4u + (uint32_t)displacement;
     return 0;
 }
 
@@ -1925,42 +1949,24 @@ static int find_thumb_call_triplet(const uint8_t *data, uint32_t size,
                                    uint32_t third_target,
                                    uint32_t *middle_target)
 {
-    csh handle;
-
-    if (!data || !middle_target || size < 12 ||
-        cs_open(CS_ARCH_ARM, CS_MODE_THUMB, &handle) != CS_ERR_OK)
+    if (!data || !middle_target || size < 12)
         return -1;
-
-    if (cs_option(handle, CS_OPT_DETAIL, CS_OPT_ON) != CS_ERR_OK) {
-        cs_close(&handle);
-        return -1;
-    }
 
     for (uint32_t off = 0; off <= size - 12; off += 2) {
-        uint16_t first_halfword;
         uint32_t first;
         uint32_t middle;
         uint32_t third;
 
-        /*
-         * Thumb-2 BL/BLX starts with 11110xxxxx.  This cheap filter keeps
-         * us from invoking Capstone on every 2-byte boundary.
-         */
-        first_halfword = (uint16_t)data[off] |
-                         ((uint16_t)data[off + 1] << 8);
-        if ((first_halfword & 0xf800u) != 0xf000u)
-            continue;
-
-        if (decode_thumb_call_target(data, size, base, off, handle,
+        if (decode_thumb_bl_target(data, size, base, off,
                                      &first) != 0 ||
             first != first_target)
             continue;
 
-        if (decode_thumb_call_target(data, size, base, off + 4, handle,
+        if (decode_thumb_bl_target(data, size, base, off + 4,
                                      &middle) != 0)
             continue;
 
-        if (decode_thumb_call_target(data, size, base, off + 8, handle,
+        if (decode_thumb_bl_target(data, size, base, off + 8,
                                      &third) != 0 ||
             third != third_target)
             continue;
@@ -1974,11 +1980,9 @@ static int find_thumb_call_triplet(const uint8_t *data, uint32_t size,
                 "[analyzer] udc_stop: fastboot_okay=0x%08x "
                 "-> udc_stop=0x%08x -> mtk_wdt_init=0x%08x\n",
                 first, middle, third);
-        cs_close(&handle);
         return 0;
     }
 
-    cs_close(&handle);
     return -1;
 }
 
