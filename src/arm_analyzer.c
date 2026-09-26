@@ -960,6 +960,42 @@ static uint32_t function_address(const arm_analysis_t *a, size_t begin)
     return (uint32_t)a->insn[begin].address;
 }
 
+/*
+ * find_function_range() may deliberately move `begin` before the PUSH
+ * prologue so that data-flow analysis can include a short pre-prologue
+ * sequence.  That speculative address is not necessarily a callable
+ * function entry in a raw LK image because code and literal pools are
+ * interleaved.
+ *
+ * Callers which expose a function pointer must instead use the real
+ * function prologue.
+ */
+static int find_function_prologue(const arm_analysis_t *a, size_t ref_idx,
+                                  size_t *prologue)
+{
+    uint32_t ref_va;
+
+    if (!a || ref_idx >= a->count || !prologue)
+        return -1;
+
+    ref_va = (uint32_t)a->insn[ref_idx].address;
+
+    for (size_t i = ref_idx + 1; i > 0; ) {
+        size_t idx = --i;
+
+        if (is_prologue(&a->insn[idx])) {
+            *prologue = idx;
+            return 0;
+        }
+
+        if (ref_va - (uint32_t)a->insn[idx].address >
+            MAX_FUNCTION_SEARCH)
+            break;
+    }
+
+    return -1;
+}
+
 static int load_reg_from_mem(const cs_insn *insn, int base_reg, int32_t disp,
                              int *dst)
 {
@@ -1508,7 +1544,7 @@ static int try_function_by_string_mode(const uint8_t *data, uint32_t size, uint3
 {
     const uint8_t *found = find_string(data, size, pat);
     arm_analysis_t a;
-    size_t begin, end, ref_idx;
+    size_t begin, end, ref_idx, prologue;
 
     if (!found)
         return -1;
@@ -1521,9 +1557,21 @@ static int try_function_by_string_mode(const uint8_t *data, uint32_t size, uint3
         return -1;
     }
 
-    *addr = function_address(&a, begin);
+    if (find_function_prologue(&a, ref_idx, &prologue) != 0) {
+        fprintf(stderr,
+                "[analyzer] %s: failed to recover function prologue\n",
+                pat);
+        close_analysis(&a);
+        return -1;
+    }
+
+    /*
+     * Keep find_function_range()'s wider `begin` for callers which need the
+     * surrounding data-flow context, but never expose its speculative
+     * pre-prologue address as a callable function pointer.
+     */
+    *addr = function_address(&a, prologue);
     (void)end;
-    (void)ref_idx;
     close_analysis(&a);
     return 0;
 }
