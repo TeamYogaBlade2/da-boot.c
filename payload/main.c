@@ -8,6 +8,13 @@
 #include "usb.h"
 #include "common.h"
 
+#define WDT_MODE_ENABLE      0x00000001u
+#define WDT_MODE_KEY         0x22000000u
+#define WDT_RESET_OFFSET     0x08u
+#define WDT_RESTART_OFFSET   0x14u
+#define WDT_RESET_KEY        0x1971u
+#define WDT_RESTART_KEY      0x1209u
+
 __attribute__((section(".params"), used, aligned(4)))
 payload_params_t g_params = {
     .magic = MAGIC_DA,
@@ -167,8 +174,8 @@ static void fastboot_disable_watchdog(void) {
         (volatile uint32_t *)(uintptr_t)g_params.wdt_base;
     uint32_t mode = wdt[0];
 
-    mode &= ~1u;       /* WDT_MODE_EN */
-    mode |= 0x22000000u; /* WDT_MODE_KEY */
+    mode &= ~WDT_MODE_ENABLE;
+    mode |= WDT_MODE_KEY;
     wdt[0] = mode;
 
     asm volatile("dsb sy\n"
@@ -336,10 +343,11 @@ void payload_bootstrap(uint32_t runtime_base) {
             (volatile uint32_t *)(uintptr_t)params->wdt_base;
         uint32_t mode;
 
-        wdt[2] = 0x1971u; /* WDT_RST */
+        *(volatile uint32_t *)((uintptr_t)wdt + WDT_RESET_OFFSET) =
+            WDT_RESET_KEY;
         mode = wdt[0];
-        mode &= ~1u;      /* WDT_MODE_EN */
-        mode |= 0x22000000u; /* WDT_MODE_KEY */
+        mode &= ~WDT_MODE_ENABLE;
+        mode |= WDT_MODE_KEY;
         wdt[0] = mode;
         asm volatile("dsb sy\nisb sy" ::: "memory");
     }
@@ -572,8 +580,10 @@ static void handle_message(protocol_t *proto, message_t *msg) {
             break;
         }
         case MSG_RESET: {
-            volatile uint32_t *wdt = (volatile uint32_t*)(0x10000000 + 0x14);
-            *wdt = 0x1209;
+            volatile uint32_t *wdt =
+                (volatile uint32_t *)(uintptr_t)
+                (g_params.wdt_base + WDT_RESTART_OFFSET);
+            *wdt = WDT_RESTART_KEY;
             while(1);
         }
         case MSG_HOOK:
