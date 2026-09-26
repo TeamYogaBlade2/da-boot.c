@@ -126,12 +126,8 @@ Path to the LK image.
 
 This option is required for `lk` mode.
 
-When LK address extraction from the Preloader fails, the following option can
-be used:
-
-```text
---lk-addr <address>
-```
+LK base is extracted from the Preloader automatically. LK mode fails if it
+cannot be recovered.
 
 ### LK boot mode
 
@@ -403,8 +399,8 @@ LK images are parsed using the MediaTek partition header.
 When an image header is present, the actual partition contents are analyzed
 instead of treating the whole container as executable code.
 
-Raw LK binaries are also supported when the LK base address can be supplied
-or extracted from the Preloader.
+Raw LK binaries are also supported when the LK base address can be extracted
+from the Preloader.
 
 ## Communication
 
@@ -438,16 +434,9 @@ Check that:
 
 ### LK base extraction fails
 
-Try supplying:
-
-```text
---lk-addr 0xXXXXXXXX
-```
-
-for the actual LK load address.
-
-The value is only used as a fallback when automatic extraction does not
-produce a base address.
+LK mode requires automatic LK base extraction from the Preloader. Verify that
+the Preloader belongs to the target device and that the analyzer can recover
+the LK load address from it.
 
 ### LK mode reports missing DRAM information
 
@@ -498,7 +487,6 @@ upstream             da-boot.c
 -p / --preloader    -p / --preloader
 --preloader-addr    --preloader-addr
 -l / --lk           -l / --lk
---lk-addr           --lk-addr
 -m / --lk-mode      -m / --lk-mode
 -d / --dram-size-per-rank
                     -d / --dram-size-per-rank

@@ -45,7 +45,7 @@ int run_lk_mode(serial_t *s, const struct soc_info *soc,
                 const char *lk_path,
                 const upload_file_t *inputs, size_t input_count,
                 const char *kernel_path, const char *ramdisk_path,
-                uint32_t preloader_addr_hint, uint32_t lk_addr_hint,
+                uint32_t preloader_addr_hint,
                 uint32_t dram_size_per_rank, uint32_t dram_ranks,
                 uint32_t lk_mode);
 

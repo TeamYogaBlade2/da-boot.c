@@ -11,7 +11,6 @@ typedef struct soc_info {
     uint32_t wdt_base;
     uint32_t wdt_reset_offset;
     uint32_t da_ram_addr;
-    uint32_t lk_base_hint;
     uint32_t boot_arg_addr;
     int part_t_startblk_offset;
 } soc_info_t;

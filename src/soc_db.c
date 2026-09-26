@@ -10,7 +10,6 @@ const soc_info_t soc_mt6589 = {
     .wdt_base = 0x10000000,
     .wdt_reset_offset = 0x14,
     .da_ram_addr = 0x80001000,
-    .lk_base_hint = 0x81E00000,
     .boot_arg_addr = 0x800A0000,
     .part_t_startblk_offset = 12,
 };
@@ -23,7 +22,6 @@ const soc_info_t soc_mt6572 = {
     .wdt_base = 0x10000000,
     .wdt_reset_offset = 0x14,
     .da_ram_addr = 0x2001000,  // BootROM用に上書きされる
-    .lk_base_hint = 0,
     .boot_arg_addr = 0x800A0000,
     .part_t_startblk_offset = 12,
 };
@@ -36,7 +34,6 @@ const soc_info_t soc_mt6582 = {
     .wdt_base = 0x10000000,
     .wdt_reset_offset = 0x14,
     .da_ram_addr = 0x80001000,
-    .lk_base_hint = 0,
     .boot_arg_addr = 0x800A0000,
     .part_t_startblk_offset = 12,
 };
@@ -49,7 +46,6 @@ const soc_info_t soc_mt6595 = {
     .wdt_base = 0x10000000,
     .wdt_reset_offset = 0x14,
     .da_ram_addr = 0x80001000,
-    .lk_base_hint = 0,
     .boot_arg_addr = 0x800A0000,
     .part_t_startblk_offset = 12,
 };

@@ -397,7 +397,7 @@ int run_lk_mode(serial_t *s, const soc_info_t *soc, const char *payload_path,
                 const char *preloader_path, const char *lk_path,
                 const upload_file_t *inputs, size_t input_count,
                 const char *kernel_path, const char *ramdisk_path,
-                uint32_t preloader_addr_hint, uint32_t lk_addr_hint,
+                uint32_t preloader_addr_hint,
                 uint32_t dram_size_per_rank, uint32_t dram_ranks,
                 uint32_t lk_mode) {
     printf("LK mode for %s\n", soc->name);
@@ -449,8 +449,11 @@ int run_lk_mode(serial_t *s, const soc_info_t *soc, const char *payload_path,
         free(pl_data);
         return -1;
     }
-    if (lk_base == 0)
-        lk_base = lk_addr_hint ? lk_addr_hint : soc->lk_base_hint;
+    if (!lk_base) {
+        fprintf(stderr, "Failed to extract LK base\n");
+        free(pl_data);
+        return -1;
+    }
 
     free(pl_data);
 
@@ -461,8 +464,6 @@ int run_lk_mode(serial_t *s, const soc_info_t *soc, const char *payload_path,
         fprintf(stderr, "Failed to read LK\n");
         return -1;
     }
-    if (lk_base == 0)
-        lk_base = lk_addr_hint ? lk_addr_hint : soc->lk_base_hint;
 
     uint32_t lk_content_offset, lk_content_size;
     char partition_name[33];
@@ -638,15 +639,6 @@ int run_lk_mode(serial_t *s, const soc_info_t *soc, const char *payload_path,
         uint32_t mtk_wdt_init = 0;
         uint32_t mt_boot_init = 0;
         uint32_t boot_mode_addr = 0;
-
-        if (lk_base != soc->lk_base_hint) {
-            fprintf(stderr,
-                    "LK fastboot hook requires LK at 0x%x (got 0x%x)\n",
-                    soc->lk_base_hint, lk_base);
-            free(payload);
-            free(lk_data);
-            return -1;
-        }
 
         if (prepare_fastboot_bootimg(kernel_path, ramdisk_path, input_path,
                                      soc->dram_base, fastboot_bootimg_path,

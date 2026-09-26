@@ -21,7 +21,6 @@ typedef enum {
 
 enum {
     OPT_PRELOADER_ADDR = 1000,
-    OPT_LK_ADDR,
 };
 
 // シリアルポート検出（MediaTek USB）
@@ -55,7 +54,6 @@ static void print_usage(const char *prog) {
     printf("      --preloader-addr <addr>\n");
     printf("                              Preloader base for raw binaries\n");
     printf("  -l, --lk <file>            LK binary path\n");
-    printf("      --lk-addr <addr>       LK base if automatic detection fails\n");
     printf("  -m, --lk-mode <mode>       LK boot mode\n");
     printf("      --dram-size-per-rank <size>\n");
     printf("                              DRAM size per rank\n");
@@ -192,7 +190,6 @@ int main(int argc, char *argv[]) {
     size_t input_count = 0;
     size_t input_capacity = 0;
     uint32_t preloader_addr_hint = 0;
-    uint32_t lk_addr_hint = 0;
     uint32_t jump_addr = 0;
     uint32_t dram_size_per_rank = 0;
     uint32_t dram_ranks = 0;
@@ -205,7 +202,6 @@ int main(int argc, char *argv[]) {
         {"preloader", required_argument, 0, 'p'},
         {"preloader-addr", required_argument, 0, OPT_PRELOADER_ADDR},
         {"lk", required_argument, 0, 'l'},
-        {"lk-addr", required_argument, 0, OPT_LK_ADDR},
         {"lk-mode", required_argument, 0, 'm'},
         {"input", required_argument, 0, 'i'},
         {"kernel", required_argument, 0, 'k'},
@@ -266,13 +262,6 @@ int main(int argc, char *argv[]) {
                     return 1;
                 }
                 break;
-            case OPT_LK_ADDR:
-                if (parse_u32(optarg, &lk_addr_hint) != 0) {
-                    fprintf(stderr, "Invalid LK address: %s\n", optarg);
-                    free_inputs(inputs, input_count);
-                    return 1;
-                }
-                break;
             case 'P': payload_path = optarg; break;
             case 'h':
                 print_usage(argv[0]);
@@ -328,8 +317,7 @@ int main(int argc, char *argv[]) {
     switch (mode) {
         case MODE_PRELOADER:
             if (lk_path || kernel_path || ramdisk_path ||
-                dram_size_per_rank || dram_ranks || lk_mode != LK_BOOT_NORMAL ||
-                lk_addr_hint) {
+                dram_size_per_rank || dram_ranks || lk_mode != LK_BOOT_NORMAL) {
                 fprintf(stderr, "LK-specific options require the lk mode\n");
                 free_inputs(inputs, input_count);
                 return 1;
@@ -377,7 +365,7 @@ int main(int argc, char *argv[]) {
         case MODE_REPL:
             if (lk_path || kernel_path || ramdisk_path || input_count ||
                 jump_addr || dram_size_per_rank || dram_ranks ||
-                lk_mode != LK_BOOT_NORMAL || preloader_addr_hint || lk_addr_hint) {
+                lk_mode != LK_BOOT_NORMAL || preloader_addr_hint) {
                 fprintf(stderr, "repl mode only accepts the preloader and payload options\n");
                 free_inputs(inputs, input_count);
                 return 1;
@@ -440,7 +428,7 @@ int main(int argc, char *argv[]) {
             ret = run_lk_mode(&serial, soc, payload_path, preloader_path,
                               lk_path, inputs, input_count,
                               kernel_path, ramdisk_path,
-                              preloader_addr_hint, lk_addr_hint,
+                              preloader_addr_hint,
                               dram_size_per_rank, dram_ranks, lk_mode);
             break;
         case MODE_REPL:
