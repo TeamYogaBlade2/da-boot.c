@@ -2100,9 +2100,66 @@ int extract_udc_stop(const uint8_t *data, uint32_t size, uint32_t base,
                              fastboot_okay, mtk_wdt_init, addr);
 }
 
+static int try_function_by_call_target_mode(const uint8_t *data,
+                                             uint32_t size, uint32_t base,
+                                             int thumb, uint32_t target_addr,
+                                             uint32_t *addr)
+{
+    arm_analysis_t a;
+
+    if (!addr || open_analysis(&a, data, size, base, thumb) != 0)
+        return -1;
+
+    for (size_t i = 0; i < a.count; i++) {
+        const cs_arm *arm;
+        size_t begin, end, prologue;
+
+        if (a.insn[i].id != ARM_INS_BL || !a.insn[i].detail)
+            continue;
+
+        arm = &a.insn[i].detail->arm;
+        if (arm->op_count < 1 ||
+            arm->operands[0].type != ARM_OP_IMM ||
+            (uint32_t)arm->operands[0].imm != target_addr)
+            continue;
+
+        if (find_function_range(&a, i, &begin, &end) != 0 ||
+            find_function_prologue(&a, i, &prologue) != 0)
+            continue;
+
+        *addr = function_address(&a, prologue);
+        fprintf(stderr,
+                "[analyzer] function by call target: caller=0x%08x "
+                "target=0x%08x entry=0x%08x\n",
+                (uint32_t)a.insn[i].address, target_addr, *addr);
+        close_analysis(&a);
+        return 0;
+    }
+
+    close_analysis(&a);
+    return -1;
+}
+
 int extract_mt_boot_init(const uint8_t *data, uint32_t size, uint32_t base,
                          uint32_t *addr)
 {
+    uint32_t fastboot_init;
+
+    /*
+     * Blade 10 KitKat's mt_boot_init() references the source pathname through
+     * a compiler/linker data structure.  Use its unique direct call to
+     * fastboot_init() as the primary code anchor, and keep the string-based
+     * path as a fallback for other LK layouts.
+     */
+    if (extract_fastboot_init(data, size, base, &fastboot_init) == 0) {
+        if (try_function_by_call_target_mode(data, size, base, 1,
+                                             fastboot_init, addr) == 0)
+            return 0;
+        if (try_function_by_call_target_mode(data, size, base, 0,
+                                             fastboot_init, addr) == 0)
+            return 0;
+    }
+
     if (try_function_by_string_mode(data, size, base, 1,
                                     "app/mt_boot/mt_boot.c", addr) == 0)
         return 0;
@@ -2123,8 +2180,24 @@ static int try_boot_mode_addr_mode(const uint8_t *data, uint32_t size,
 
     str_va = base + (uint32_t)(found - data);
     if (find_string_function(&a, str_va, &begin, &end, &ref_idx) != 0) {
-        close_analysis(&a);
-        return -1;
+        uint32_t mt_boot_init;
+
+        /*
+         * The filename string is present in the image, but its data-flow
+         * reference can be missed by the linear analyzer.  Recover the
+         * mt_boot_init() caller through fastboot_init() and continue with
+         * the exact same cmp #99 scan below.
+         */
+        if (extract_mt_boot_init(data, size, base, &mt_boot_init) != 0 ||
+            find_instruction_index(&a, mt_boot_init, &ref_idx) != 0 ||
+            find_function_range(&a, ref_idx, &begin, &end) != 0) {
+            close_analysis(&a);
+            return -1;
+        }
+
+        fprintf(stderr,
+                "[analyzer] boot_mode_addr: using mt_boot_init=0x%08x\n",
+                mt_boot_init);
     }
 
     for (size_t i = begin + 1; i < end; i++) {
