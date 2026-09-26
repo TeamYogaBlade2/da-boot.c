@@ -3,6 +3,14 @@
 #include <string.h>
 #include <unistd.h>
 
+static uint32_t decode_be32(const uint8_t buf[4])
+{
+    return ((uint32_t)buf[0] << 24) |
+           ((uint32_t)buf[1] << 16) |
+           ((uint32_t)buf[2] << 8) |
+           (uint32_t)buf[3];
+}
+
 static int put_byte(serial_t *s, uint8_t b) {
     return serial_write(s, &b, 1);
 }
@@ -26,7 +34,7 @@ static int put_dword(serial_t *s, uint32_t d) {
 static int get_dword(serial_t *s, uint32_t *d) {
     uint8_t buf[4];
     if (serial_read(s, buf, 4, 2000) != 0) return -1;
-    *d = (buf[0] << 24) | (buf[1] << 16) | (buf[2] << 8) | buf[3];
+    *d = decode_be32(buf);
     return 0;
 }
 

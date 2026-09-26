@@ -122,9 +122,11 @@ int protocol_send_message(protocol_t *p, const message_t *msg) {
 int protocol_read_message(protocol_t *p, message_t *msg) {
     uint8_t size_buf[4];
     int min_size;
+    uint32_t size;
 
     if (recv_all(p, size_buf, 4, 0) != 0) return -1;
-    uint32_t size = __builtin_bswap32(*(uint32_t*)size_buf);
+    memcpy(&size, size_buf, sizeof(size));
+    size = __builtin_bswap32(size);
     if (size > sizeof(p->buf)) return -1;
     if (recv_all(p, p->buf, size, 0) != 0) return -1;
 
@@ -214,8 +216,10 @@ int protocol_send_response(protocol_t *p, const response_t *resp) {
 
 int protocol_read_response(protocol_t *p, response_t *resp) {
     uint8_t size_buf[4];
+    uint32_t size;
     if (recv_all(p, size_buf, 4, 0) != 0) return -1;
-    uint32_t size = __builtin_bswap32(*(uint32_t*)size_buf);
+    memcpy(&size, size_buf, sizeof(size));
+    size = __builtin_bswap32(size);
     if (size == 0 || size > sizeof(p->buf)) return -1;
     if (recv_all(p, p->buf, size, 0) != 0) return -1;
 

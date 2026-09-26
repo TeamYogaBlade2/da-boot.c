@@ -8,6 +8,14 @@ typedef struct __attribute__((packed)) {
     uint8_t data[255];
 } wire_msg_t;
 
+static uint32_t decode_be32(const uint8_t buf[4])
+{
+    return ((uint32_t)buf[0] << 24) |
+           ((uint32_t)buf[1] << 16) |
+           ((uint32_t)buf[2] << 8) |
+           (uint32_t)buf[3];
+}
+
 void protocol_init(protocol_t *p, serial_t *io) {
 	memset(p, 0, sizeof(*p));
     p->io = io;
@@ -141,9 +149,9 @@ int protocol_send_message(protocol_t *p, const message_t *msg) {
     // 長さプレフィックス
     uint32_t size = len;
     uint8_t size_buf[4] = {(size >> 24) & 0xff, (size >> 16) & 0xff, (size >> 8) & 0xff, size & 0xff};
-    serial_write(p->io, size_buf, 4);
-    serial_write(p->io, buf, len);
-    return 0;
+    if (serial_write(p->io, size_buf, 4) != 0)
+        return -1;
+    return serial_write(p->io, buf, len);
 }
 
 int protocol_read_message(protocol_t *p, message_t *msg) {
@@ -151,7 +159,7 @@ int protocol_read_message(protocol_t *p, message_t *msg) {
     int min_size;
 
     if (serial_read(p->io, size_buf, 4, 5000) != 0) return -1;
-    uint32_t size = (size_buf[0] << 24) | (size_buf[1] << 16) | (size_buf[2] << 8) | size_buf[3];
+    uint32_t size = decode_be32(size_buf);
     if (size > sizeof(p->buf)) return -1;
 
     if (serial_read(p->io, p->buf, size, 5000) != 0) return -1;
@@ -237,9 +245,9 @@ int protocol_send_response(protocol_t *p, const response_t *resp) {
     }
     uint32_t size = len;
     uint8_t size_buf[4] = {(size >> 24) & 0xff, (size >> 16) & 0xff, (size >> 8) & 0xff, size & 0xff};
-    serial_write(p->io, size_buf, 4);
-    serial_write(p->io, buf, len);
-    return 0;
+    if (serial_write(p->io, size_buf, 4) != 0)
+        return -1;
+    return serial_write(p->io, buf, len);
 }
 
 int protocol_read_response(protocol_t *p, response_t *resp) {
@@ -249,8 +257,7 @@ int protocol_read_response(protocol_t *p, response_t *resp) {
             protocol_flush_payload_log(p);
             return -1;
         }
-        uint32_t size = (size_buf[0] << 24) | (size_buf[1] << 16) |
-                        (size_buf[2] << 8) | size_buf[3];
+        uint32_t size = decode_be32(size_buf);
         if (size == 0 || size > sizeof(p->buf)) {
             protocol_flush_payload_log(p);
             return -1;
