@@ -886,7 +886,6 @@ static int find_function_range(const arm_analysis_t *a, size_t ref_idx,
      */
     if (prologue != SIZE_MAX) {
         size_t entry = prologue;
-        int crossed_padding = 0;
 
         for (size_t steps = 0; entry > 0 && steps < 8; steps++) {
             size_t prev = entry - 1;
@@ -896,7 +895,6 @@ static int find_function_range(const arm_analysis_t *a, size_t ref_idx,
              * alignment/padding between a function and nearby data.
              */
             if (is_padding_nop_at(a, (uint32_t)a->insn[prev].address)) {
-                crossed_padding = 1;
                 break;
             }
 
@@ -929,14 +927,6 @@ static int find_function_range(const arm_analysis_t *a, size_t ref_idx,
 
             entry = prev;
         }
-
-        /*
-         * If a padding boundary was encountered, the instructions we walked
-         * through are not a valid pre-prologue sequence.  Keep the actual
-         * PUSH prologue as the function entry.
-         */
-        if (crossed_padding)
-            entry = prologue;
 
         if (entry != prologue) {
             fprintf(stderr,
