@@ -1056,7 +1056,8 @@ int run_lk_mode(serial_t *s, const soc_info_t *soc, const char *payload_path,
 
     // Boot arg準備とアップロード
     boot_arg_t boot_arg;
-    boot_arg_init(&boot_arg, dram_size_per_rank, dram_ranks, lk_mode);
+    boot_arg_init(&boot_arg, soc->uart0_base,
+                  dram_size_per_rank, dram_ranks, lk_mode);
     printf("Uploading boot arg to 0x%x...\n", boot_arg_addr);
     if (upload_buffer(&proto, s, boot_arg_addr,
                       (const uint8_t *)&boot_arg, boot_arg_size,
