@@ -813,6 +813,44 @@ static int find_reference(const arm_analysis_t *a, uint32_t target_va, size_t *i
     return -1;
 }
 
+/*
+ * Detect architectural NOP padding directly from the input bytes.
+ *
+ * LK mixes executable code with literal/data regions.  A linear Capstone
+ * decode can therefore turn bytes after an alignment NOP into plausible
+ * Thumb instructions.  Function-entry recovery must not walk through that
+ * padding/data and return a bogus address.
+ */
+static int is_padding_nop_at(const arm_analysis_t *a, uint32_t va)
+{
+    uint32_t off;
+
+    if (!a || va < a->base)
+        return 0;
+
+    off = va - a->base;
+    if (off >= a->size)
+        return 0;
+
+    if (a->thumb) {
+        if (a->size - off < 2)
+            return 0;
+
+        /* Thumb NOP: 0xbf00, little-endian in the image. */
+        return a->data[off] == 0x00 &&
+               a->data[off + 1] == 0xbf;
+    }
+
+    if (a->size - off < 4)
+        return 0;
+
+    /* ARM NOP: mov r0, r0. */
+    return a->data[off] == 0x00 &&
+           a->data[off + 1] == 0xf0 &&
+           a->data[off + 2] == 0x20 &&
+           a->data[off + 3] == 0xe3;
+}
+
 static int find_function_range(const arm_analysis_t *a, size_t ref_idx,
                               size_t *begin, size_t *end)
 {
@@ -848,12 +886,38 @@ static int find_function_range(const arm_analysis_t *a, size_t ref_idx,
      */
     if (prologue != SIZE_MAX) {
         size_t entry = prologue;
+        int crossed_padding = 0;
 
         for (size_t steps = 0; entry > 0 && steps < 8; steps++) {
             size_t prev = entry - 1;
 
+            /*
+             * Never walk backward through an architectural NOP used as
+             * alignment/padding between a function and nearby data.
+             */
+            if (is_padding_nop_at(a, (uint32_t)a->insn[prev].address)) {
+                crossed_padding = 1;
+                break;
+            }
+
             if (is_block_terminator(&a->insn[prev]))
                 break;
+
+            /*
+             * A real function may have a short setup sequence before its
+             * PUSH prologue:
+             *
+             *     ldr ...
+             *     movs ...
+             *     push ...
+             *
+             * Stop before crossing the previous function's return.  This
+             * recovers mt_boot-style/precompiled LK functions whose entry
+             * precedes PUSH by a few instructions.
+             */
+            if (prev > 0 && is_return(&a->insn[prev - 1]))
+                break;
+
             /*
              * Do not cross alignment/padding NOPs between functions.
              * Otherwise a function with a short literal/GOT prelude can
@@ -865,6 +929,14 @@ static int find_function_range(const arm_analysis_t *a, size_t ref_idx,
 
             entry = prev;
         }
+
+        /*
+         * If a padding boundary was encountered, the instructions we walked
+         * through are not a valid pre-prologue sequence.  Keep the actual
+         * PUSH prologue as the function entry.
+         */
+        if (crossed_padding)
+            entry = prologue;
 
         if (entry != prologue) {
             fprintf(stderr,
