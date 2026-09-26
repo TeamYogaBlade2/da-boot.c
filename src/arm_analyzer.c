@@ -2219,6 +2219,20 @@ static int find_thumb_call_triplet(const uint8_t *data, uint32_t size,
     return -1;
 }
 
+/*
+ * mtk_wdt_init() is used only as an analysis anchor for locating
+ * udc_stop(); it is not passed to or called by the payload.
+ */
+static int extract_mtk_wdt_init(const uint8_t *data, uint32_t size,
+                                uint32_t base, uint32_t *addr)
+{
+    if (try_function_by_string_mode(data, size, base, 1,
+                                    "UB wdt init\n", addr) == 0)
+        return 0;
+    return try_function_by_string_mode(data, size, base, 0,
+                                       "UB wdt init\n", addr);
+}
+
 static int try_udc_stop_mode(const uint8_t *data, uint32_t size,
                              uint32_t base, int thumb,
                              uint32_t fastboot_okay,
