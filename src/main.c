@@ -21,6 +21,7 @@ typedef enum {
 
 enum {
     OPT_PRELOADER_ADDR = 1000,
+    OPT_APPENDED_DTB = 1001,
 };
 
 // シリアルポート検出（MediaTek USB）
@@ -59,6 +60,7 @@ static void print_usage(const char *prog) {
     printf("                              DRAM size per rank\n");
     printf("  -n, --dram-ranks <num>     DRAM rank count\n");
     printf("  -k, --kernel <file>        zImage path\n");
+    printf("      --appended-dtb <file>  Append DTB to --kernel before booting\n");
     printf("  -r, --ramdisk <file>       initrd path (requires --kernel)\n");
     printf("  -i, --input <file@addr>    Binary to upload (repeatable)\n");
     printf("  -j, --jump-address <addr>  Final jump address\n");
@@ -159,6 +161,81 @@ static int parse_input_spec(const char *spec, upload_file_t *out) {
     return 0;
 }
 
+static int copy_file_to_stream(FILE *out, const char *path) {
+    FILE *in;
+    unsigned char buf[8192];
+    size_t n;
+    int ret = 0;
+
+    in = fopen(path, "rb");
+    if (!in)
+        return -1;
+
+    while ((n = fread(buf, 1, sizeof(buf), in)) != 0) {
+        if (fwrite(buf, 1, n, out) != n) {
+            ret = -1;
+            break;
+        }
+    }
+
+    if (ferror(in))
+        ret = -1;
+    if (fclose(in) != 0)
+        ret = -1;
+
+    return ret;
+}
+
+static int create_appended_kernel(const char *kernel_path,
+                                  const char *dtb_path,
+                                  char *output_path,
+                                  size_t output_path_size) {
+    static const char template[] =
+        "/tmp/da-boot-kernel-appended-dtb-XXXXXX";
+    FILE *out;
+    int fd;
+    int ret = 0;
+
+    if (!kernel_path || !dtb_path || !output_path)
+        return -1;
+
+    if (sizeof(template) > output_path_size)
+        return -1;
+
+    memcpy(output_path, template, sizeof(template));
+
+    fd = mkstemp(output_path);
+    if (fd < 0)
+        return -1;
+
+    out = fdopen(fd, "wb");
+    if (!out) {
+        close(fd);
+        unlink(output_path);
+        return -1;
+    }
+
+    /*
+     * Intentionally do not inspect the contents.  This is just the exact
+     * byte-wise equivalent of:
+     *
+     *   cat kernel dtb > output
+     */
+    if (copy_file_to_stream(out, kernel_path) != 0)
+        ret = -1;
+    if (!ret && copy_file_to_stream(out, dtb_path) != 0)
+        ret = -1;
+    if (fclose(out) != 0)
+        ret = -1;
+
+    if (ret != 0) {
+        unlink(output_path);
+        return -1;
+    }
+
+    return 0;
+}
+
 static int append_input(upload_file_t **inputs, size_t *count,
                         size_t *capacity, const char *spec) {
     upload_file_t input;
@@ -225,6 +302,7 @@ int main(int argc, char *argv[]) {
     const char *preloader_path = NULL;
     const char *lk_path = NULL;
     const char *kernel_path = NULL;
+    const char *appended_dtb_path = NULL;
     const char *ramdisk_path = NULL;
     upload_file_t *inputs = NULL;
     size_t input_count = 0;
@@ -245,6 +323,7 @@ int main(int argc, char *argv[]) {
         {"lk-mode", required_argument, 0, 'm'},
         {"input", required_argument, 0, 'i'},
         {"kernel", required_argument, 0, 'k'},
+        {"appended-dtb", required_argument, 0, OPT_APPENDED_DTB},
         {"ramdisk", required_argument, 0, 'r'},
         {"jump-address", required_argument, 0, 'j'},
         {"dram-size-per-rank", required_argument, 0, 'd'},
@@ -266,6 +345,7 @@ int main(int argc, char *argv[]) {
                 }
                 break;
             case 'k': kernel_path = optarg; break;
+            case OPT_APPENDED_DTB: appended_dtb_path = optarg; break;
             case 'r': ramdisk_path = optarg; break;
             case 'j':
                 if (parse_u32(optarg, &jump_addr) != 0) {
@@ -354,9 +434,15 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
+    if (appended_dtb_path && !kernel_path) {
+        fprintf(stderr, "--appended-dtb requires --kernel\n");
+        free_inputs(inputs, input_count);
+        return 1;
+    }
+
     switch (mode) {
         case MODE_PRELOADER:
-            if (lk_path || kernel_path || ramdisk_path ||
+            if (lk_path || kernel_path || appended_dtb_path || ramdisk_path ||
                 dram_size_per_rank || dram_ranks || lk_mode != LK_BOOT_NORMAL) {
                 fprintf(stderr, "LK-specific options require the lk mode\n");
                 free_inputs(inputs, input_count);
@@ -403,7 +489,7 @@ int main(int argc, char *argv[]) {
             }
             break;
         case MODE_REPL:
-            if (lk_path || kernel_path || ramdisk_path || input_count ||
+            if (lk_path || kernel_path || appended_dtb_path || ramdisk_path || input_count ||
                 jump_addr || dram_size_per_rank || dram_ranks ||
                 lk_mode != LK_BOOT_NORMAL || preloader_addr_hint) {
                 fprintf(stderr, "repl mode only accepts the preloader and payload options\n");
@@ -464,13 +550,42 @@ int main(int argc, char *argv[]) {
                                      inputs, input_count,
                                      preloader_addr_hint, jump_addr);
             break;
-        case MODE_LK:
+        case MODE_LK: {
+            const char *effective_kernel_path = kernel_path;
+            char appended_kernel_path[] =
+                "/tmp/da-boot-kernel-appended-dtb-XXXXXX";
+
+            if (appended_dtb_path) {
+                /*
+                 * Keep --kernel untouched and only substitute the input to
+                 * the boot.img preparation path below.
+                 */
+                if (create_appended_kernel(kernel_path, appended_dtb_path,
+                                            appended_kernel_path,
+                                            sizeof(appended_kernel_path)) != 0) {
+                    fprintf(stderr,
+                            "Failed to append DTB %s to kernel %s\n",
+                            appended_dtb_path, kernel_path);
+                    ret = -1;
+                    break;
+                }
+
+                printf("Using kernel with appended DTB: %s + %s\n",
+                       kernel_path, appended_dtb_path);
+                effective_kernel_path = appended_kernel_path;
+            }
+
             ret = run_lk_mode(&serial, soc, payload_path, preloader_path,
                               lk_path, inputs, input_count,
-                              kernel_path, ramdisk_path,
+                              effective_kernel_path, ramdisk_path,
                               preloader_addr_hint,
                               dram_size_per_rank, dram_ranks, lk_mode);
+
+            if (appended_dtb_path)
+                unlink(appended_kernel_path);
+
             break;
+        }
         case MODE_REPL:
             ret = run_repl_mode(&serial);
             break;
