@@ -87,6 +87,12 @@ dd if=ramdisk of=ramdisk.cpio.gz bs=512 skip=1
 ./da-boot --preloader ../../b8000/stock_rom/4.4/preloader_blade10_row_wifi.bin --lk ../../b8000/stock_rom/4.4/lk.bin --dram-size-per-rank 0x20000000 --dram-ranks 2 --kernel ../twrp/out/kernel.zImage --ramdisk ../twrp/out/ramdisk.cpio.gz lk
 ```
 
+Fastboot mode:
+
+```
+./da-boot --preloader preloader.bin --lk lk.bin --dram-size-per-rank 0x20000000 --dram-ranks 2 --kernel kernel.zImage --ramdisk ramdisk.cpio.gz --lk-mode fastboot lk
+```
+
 ## Common options
 
 ### Preloader
