@@ -961,6 +961,49 @@ static uint32_t function_address(const arm_analysis_t *a, size_t begin)
 }
 
 /*
+ * Count direct BL/BLX references to a candidate callable address.
+ *
+ * find_function_range() may recover a short pre-prologue entry which is
+ * semantically the function entry, but that is not always the address used
+ * by callers.  For example, fastboot_init() is called at its PUSH/prologue
+ * address, while mtk_wdt_init() has two instructions before its PUSH and
+ * callers target that earlier entry.
+ *
+ * Only direct immediate BL/BLX targets are considered here.  This is
+ * deliberately conservative: if the distinction cannot be established from
+ * an actual call target, retain the traditional prologue address.
+ */
+static unsigned direct_call_count(const arm_analysis_t *a, uint32_t target)
+{
+    unsigned count = 0;
+    uint32_t normalized_target = target & ~1u;
+
+    if (!a)
+        return 0;
+
+    for (size_t i = 0; i < a->count; i++) {
+        const cs_insn *insn = &a->insn[i];
+        const cs_arm *arm;
+        uint32_t call_target_addr;
+
+        if (!insn->detail ||
+            (insn->id != ARM_INS_BL && insn->id != ARM_INS_BLX))
+            continue;
+
+        arm = &insn->detail->arm;
+        if (!arm->op_count ||
+            arm->operands[0].type != ARM_OP_IMM)
+            continue;
+
+        call_target_addr = (uint32_t)arm->operands[0].imm;
+        if ((call_target_addr & ~1u) == normalized_target)
+            count++;
+    }
+
+    return count;
+}
+
+/*
  * find_function_range() may deliberately move `begin` before the PUSH
  * prologue so that data-flow analysis can include a short pre-prologue
  * sequence.  That speculative address is not necessarily a callable
@@ -1545,6 +1588,7 @@ static int try_function_by_string_mode(const uint8_t *data, uint32_t size, uint3
     const uint8_t *found = find_string(data, size, pat);
     arm_analysis_t a;
     size_t begin, end, ref_idx, prologue;
+    size_t callable = SIZE_MAX;
 
     if (!found)
         return -1;
@@ -1565,12 +1609,49 @@ static int try_function_by_string_mode(const uint8_t *data, uint32_t size, uint3
         return -1;
     }
 
+    callable = prologue;
+
+    /*
+     * There are two distinct MT6589 LK layouts in the same binary:
+     *
+     *   fastboot_init():
+     *       [entry candidate] -> [PUSH/prologue]
+     *       callers target the PUSH address
+     *
+     *   mtk_wdt_init():
+     *       [entry] [entry+2] [PUSH/prologue]
+     *       callers target the earlier entry
+     *
+     * find_string_function() already identifies the pre-prologue candidate
+     * as `begin`.  Use it only when the binary itself proves that candidate
+     * is a direct call target and the PUSH address is not.
+     */
+    if (begin != prologue) {
+        uint32_t begin_addr = function_address(&a, begin);
+        uint32_t prologue_addr = function_address(&a, prologue);
+        unsigned begin_calls = direct_call_count(&a, begin_addr);
+        unsigned prologue_calls = direct_call_count(&a, prologue_addr);
+
+        fprintf(stderr,
+                "[analyzer] %s: callable candidates entry=0x%08x "
+                "(direct BL=%u) prologue=0x%08x (direct BL=%u)%s\n",
+                pat, begin_addr, begin_calls,
+                prologue_addr, prologue_calls,
+                begin_calls > 0 && prologue_calls == 0
+                    ? " -> using entry"
+                    : " -> using prologue");
+
+        if (begin_calls > 0 && prologue_calls == 0)
+            callable = begin;
+    }
+
     /*
      * Keep find_function_range()'s wider `begin` for callers which need the
      * surrounding data-flow context, but never expose its speculative
-     * pre-prologue address as a callable function pointer.
+     * pre-prologue address as a callable function pointer unless the image
+     * itself contains a direct call to that address.
      */
-    *addr = function_address(&a, prologue);
+    *addr = function_address(&a, callable);
     (void)end;
     close_analysis(&a);
     return 0;
