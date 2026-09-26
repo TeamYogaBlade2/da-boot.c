@@ -818,14 +818,54 @@ static int find_function_range(const arm_analysis_t *a, size_t ref_idx,
 {
     size_t start = ref_idx;
     size_t stop;
+    size_t prologue = SIZE_MAX;
     uint32_t ref_va = (uint32_t)a->insn[ref_idx].address;
 
     while (start > 0) {
         start--;
-        if (is_prologue(&a->insn[start]))
+        if (is_prologue(&a->insn[start])) {
+            prologue = start;
             break;
+        }
         if (ref_va - (uint32_t)a->insn[start].address > MAX_FUNCTION_SEARCH)
             break;
+    }
+
+    /*
+     * Some Thumb functions have a small literal/GOT setup sequence before
+     * their stack-frame prologue.  For example:
+     *
+     *     ldr   r0, [literal]
+     *     movs  r3, #imm
+     *     push  {r4,r5,...,lr}
+     *
+     * In that case the first PUSH is not the actual function entry.
+     *
+     * Walk back only a small bounded number of instructions, stopping at a
+     * block/function terminator.  This preserves the normal PUSH-based
+     * detection while recovering the real entry when there is a short
+     * prelude immediately before it.
+     */
+    if (prologue != SIZE_MAX) {
+        size_t entry = prologue;
+
+        for (size_t steps = 0; entry > 0 && steps < 8; steps++) {
+            size_t prev = entry - 1;
+
+            if (is_block_terminator(&a->insn[prev]))
+                break;
+
+            entry = prev;
+        }
+
+        if (entry != prologue) {
+            fprintf(stderr,
+                    "[analyzer] function entry: prologue=0x%08x "
+                    "entry=0x%08x\n",
+                    (uint32_t)a->insn[prologue].address,
+                    (uint32_t)a->insn[entry].address);
+            start = entry;
+        }
     }
 
     stop = ref_idx + 1;
